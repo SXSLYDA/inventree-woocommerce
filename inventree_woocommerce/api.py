@@ -73,12 +73,24 @@ class StatusView(APIView):
             "last_sync": state.last_run_at if state else None,
             "last_full_sync": state.last_full_run_at if state else None,
             "last_summary": state.last_summary if state else {},
+            "awaiting_release": _awaiting_release(config),
             "product_errors": list(ProductLink.objects.exclude(last_error="")
                                    .values("part_id", "woo_product_id", "last_error")[:50]),
             "orders": list(WooOrder.objects.values(
                 "pk", "woo_order_number", "woo_status", "state", "sales_order_id", "on_account", "held",
                 "build_order_ids", "warnings", "error", "received_at")[:25]),
         })
+
+
+def _awaiting_release(config):
+    """Build-to-order parts flagged for the shop but held back until their design is signed off."""
+    from part.models import Part
+
+    from .catalog import shop_modes
+
+    _, held = shop_modes(config, with_held=True)
+    names = dict(Part.objects.filter(pk__in=held).values_list("pk", "name"))
+    return [{"part_id": pid, "name": names.get(pid, ""), "reason": reason} for pid, reason in sorted(held.items())]
 
 
 class SyncView(APIView):

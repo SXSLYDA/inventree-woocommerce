@@ -222,6 +222,20 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
             "validator": bool,
             "default": True,
         },
+        # --- Releasing build-to-order designs ---
+        "BUILD_REQUIRES_VALID_BOM": {
+            "name": "Build to order needs a validated BOM",
+            "description": "Only sell a build-to-order assembly once its BOM is validated in InvenTree. Editing the "
+                           "BOM afterwards takes it out of the shop until it's validated again.",
+            "validator": bool,
+            "default": True,
+        },
+        "BUILD_REQUIRES_LOCKED": {
+            "name": "Build to order needs a locked part",
+            "description": "Also require the assembly to be locked in InvenTree before it's sold.",
+            "validator": bool,
+            "default": False,
+        },
         # --- Build Orders ---
         "BUILD_ORDERS": {
             "name": "Build Orders for build-to-order items",

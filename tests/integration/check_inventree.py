@@ -75,6 +75,16 @@ img = io.BytesIO()
 Image.new("RGB", (20, 20), "red").save(img, "JPEG")
 plug.image.save("plug.jpg", ContentFile(img.getvalue()))
 
+# --- build-to-order waits for a released design: BOM validated in InvenTree ---
+from part.models import BomItem  # noqa: E402
+
+BomItem.objects.create(part=harness, sub_part=plug, quantity=2)
+_, held = shop_modes(load_config(), with_held=True)
+print("held back before validation:", held)
+assert held == {harness.pk: "BOM not validated"}
+harness.refresh_from_db()
+harness.validate_bom(None)
+
 config = load_config()
 modes = shop_modes(config)
 print("modes:", {Part.objects.get(pk=k).name: v for k, v in modes.items()})
@@ -243,6 +253,36 @@ handle_event("common_parameter.saved", Parameter.objects.get(model_id=plug.pk, t
 print("after unpublish:", FakeClient.calls[-1]["update"])
 assert FakeClient.calls[-1]["update"][0]["status"] == "draft"
 assert not ProductLink.objects.get(part_id=plug.pk).published
+
+# --- editing the BOM un-validates it: product leaves the shop, and new orders get no Build Order ---
+noprice.component = True
+noprice.save()
+BomItem.objects.create(part=harness, sub_part=noprice, quantity=1)
+harness.refresh_from_db()
+print("bom_validated after edit:", harness.bom_validated)
+assert harness.bom_validated is False  # InvenTree re-checked the BOM and saved the part
+handle_event("part_part.saved", harness.pk)
+harness_product = ProductLink.objects.get(part_id=harness.pk).woo_product_id
+print("after BOM edit:", FakeClient.calls[-1]["update"])
+assert {"id": harness_product, "status": "draft"} in FakeClient.calls[-1]["update"]
+
+# an order placed from a stale page before the product was pulled
+stale = dict(order, id=9050, number="9050", line_items=[
+    {"product_id": harness_product, "name": "Harness", "sku": "OMG263-3620", "quantity": 1, "total": "850.00"}])
+stale_body = json.dumps(stale).encode()
+stale_sig = base64.b64encode(hmac.new(b"whsec", stale_body, hashlib.sha256).digest()).decode()
+client.post("/plugin/woocommerce/webhook/order/", data=stale_body, content_type="application/json", secure=True,
+            HTTP_X_WC_WEBHOOK_SIGNATURE=stale_sig, HTTP_X_WC_WEBHOOK_RESOURCE="order")
+stale_rec = WooOrder.objects.get(woo_order_id=9050)
+print("stale order:", stale_rec.state, stale_rec.build_order_ids, stale_rec.warnings)
+assert stale_rec.state == "created" and stale_rec.build_order_ids == []
+assert "BOM not validated" in stale_rec.warnings
+
+harness.refresh_from_db()
+harness.validate_bom(None)
+handle_event("part_part.saved", harness.pk)
+print("re-validated:", FakeClient.calls[-1]["update"])
+assert any(u["id"] == harness_product and u.get("status") == "publish" for u in FakeClient.calls[-1]["update"])
 
 # --- credit accounts ---
 from common.models import ParameterTemplate as PT  # noqa: E402

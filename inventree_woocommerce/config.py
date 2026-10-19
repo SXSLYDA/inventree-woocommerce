@@ -50,6 +50,8 @@ class Config:
     sync_accounts: bool = True
 
     build_orders: str = "shortfall"
+    build_requires_valid_bom: bool = True
+    build_requires_locked: bool = False
 
     @property
     def woo_configured(self) -> bool:
@@ -114,4 +116,6 @@ def load_config(plugin=None) -> Config:
         account_methods=[v.lower() for v in _split(s("ACCOUNT_PAYMENT_METHODS"))],
         sync_accounts=bool(s("SYNC_ACCOUNTS")),
         build_orders=s("BUILD_ORDERS") or "shortfall",
+        build_requires_valid_bom=bool(s("BUILD_REQUIRES_VALID_BOM")),
+        build_requires_locked=bool(s("BUILD_REQUIRES_LOCKED")),
     )

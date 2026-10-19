@@ -40,6 +40,25 @@ def parse_shop_value(value):
     return None
 
 
+def release_blocker(mode, assembly, bom_validated, locked, config):
+    """
+    Why a build-to-order assembly isn't released for sale yet ("" = it is).
+
+    Build to order sells a design you haven't built, so it waits until the
+    design is signed off in InvenTree: BOM validated (and, optionally, the part
+    locked). Editing the BOM afterwards un-validates it in InvenTree, which
+    takes the product out of the shop again until it is re-validated.
+    Stock-only items are already built, so they're never held back.
+    """
+    if mode != BUILD or not assembly:
+        return ""
+    if config.build_requires_valid_bom and not bom_validated:
+        return "BOM not validated"
+    if config.build_requires_locked and not locked:
+        return "part not locked"
+    return ""
+
+
 def resolve_mode(parameter_value, in_shop_category, category_default_mode=STOCK):
     """Combine the parameter and category rules into STOCK, BUILD or None (not published)."""
     parsed = parse_shop_value(parameter_value)
@@ -63,6 +82,7 @@ class PartSnapshot:
     price: Decimal | None = None
     available: int = 0
     lead_time: str = ""
+    revision: str = ""
     parameters: list[tuple[str, str]] = field(default_factory=list)  # (name, value) to publish
     image_key: str = ""  # stored file name of the part image ("" = no image)
     image_url: str = ""  # public, signed URL WooCommerce downloads the image from
@@ -98,6 +118,8 @@ def build_product(snap, mode, config):
     Images are added by the caller only when the image itself changed.
     """
     short = [f"<p>{html.escape(snap.description)}</p>"] if snap.description else []
+    if snap.revision:
+        short.append(f"<p>Revision {html.escape(snap.revision)}</p>")
     if mode == BUILD:
         lead = f" Lead time: {html.escape(snap.lead_time)}." if snap.lead_time else ""
         short.append(f"<p>Built to order.{lead}</p>")
@@ -118,6 +140,7 @@ def build_product(snap, mode, config):
         "meta_data": [
             {"key": "_inventree_part_id", "value": str(snap.part_id)},
             {"key": "_inventree_mode", "value": mode},
+            {"key": "_inventree_revision", "value": snap.revision},
         ],
     }
     if snap.price is not None and snap.price > 0:
@@ -176,10 +199,13 @@ def _shop_category_ids(config):
     return set(category.get_descendants(include_self=True).values_list("pk", flat=True))
 
 
-def shop_modes(config, part_ids=None):
+def shop_modes(config, part_ids=None, with_held=False):
     """
     {part_id: STOCK|BUILD} for every published part (or just those in part_ids).
     Parts not in the result are not in the shop.
+
+    with_held=True also returns {part_id: reason} for build-to-order parts
+    flagged for the shop but held back until their design is released.
     """
     from part.models import Part
 
@@ -195,11 +221,19 @@ def shop_modes(config, part_ids=None):
         flagged = [pid for pid, value in flags.items() if parse_shop_value(value) in (STOCK, BUILD)]
         candidates = candidates.filter(Q(pk__in=flagged) | Q(category_id__in=category_ids))
 
-    modes = {}
-    for pid, category_id in candidates.values_list("pk", "category_id"):
+    modes, held = {}, {}
+    rows = candidates.values_list("pk", "category_id", "assembly", "bom_validated", "locked")
+    for pid, category_id, assembly, bom_validated, locked in rows:
         mode = resolve_mode(flags.get(pid), category_id in category_ids, config.category_default_mode)
-        if mode:
+        if not mode:
+            continue
+        blocker = release_blocker(mode, assembly, bom_validated, locked, config)
+        if blocker:
+            held[pid] = blocker
+        else:
             modes[pid] = mode
+    if with_held:
+        return modes, held
     return modes
 
 
@@ -269,6 +303,7 @@ def snapshot(part, config, mode):
         price=sale_price(part, config.currency),
         available=shop_available(part, config),
         lead_time=lead,
+        revision=(part.revision or "").strip(),
         parameters=published,
         image_key=image_key,
         image_url=image_url,

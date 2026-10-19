@@ -102,3 +102,25 @@ def test_hash_ignores_stock_and_tracks_details():
 def test_image_payload():
     assert image_payload(snap()) == []
     assert image_payload(snap(image_url="https://x/i.jpg"))[0]["src"] == "https://x/i.jpg"
+
+
+def test_release_blocker():
+    from inventree_woocommerce.catalog import release_blocker
+
+    c = Config()  # validated BOM required, lock not required
+    assert release_blocker(BUILD, True, False, False, c) == "BOM not validated"
+    assert release_blocker(BUILD, True, True, False, c) == ""
+    assert release_blocker(STOCK, True, False, False, c) == ""      # already built - never held back
+    assert release_blocker(BUILD, False, False, False, c) == ""     # not an assembly - nothing to validate
+    locked = Config(build_requires_locked=True)
+    assert release_blocker(BUILD, True, True, False, locked) == "part not locked"
+    assert release_blocker(BUILD, True, True, True, locked) == ""
+    off = Config(build_requires_valid_bom=False)
+    assert release_blocker(BUILD, True, False, False, off) == ""
+
+
+def test_revision_shown_and_hashed():
+    a, _ = build_product(snap(revision="B"), STOCK, Config())
+    b, _ = build_product(snap(revision="C"), STOCK, Config())
+    assert "<p>Revision B</p>" in a["short_description"]
+    assert payload_hash(a) != payload_hash(b)

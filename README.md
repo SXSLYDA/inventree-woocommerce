@@ -29,6 +29,12 @@ A part is published when it is **Active** and **Salable**, and either:
 | `No` | Kept out of the shop, even inside the shop category |
 | *(not set)* | Published only if the part is in the **Shop category** (or below it), using the category mode |
 
+**Build-to-order assemblies wait for a released design.** You're selling something you haven't built yet, so
+it only goes on sale once its BOM is **validated** in InvenTree (and, if you turn on *Build to order needs a
+locked part*, once the part is **locked**). Edit the BOM later and InvenTree un-validates it, which takes the
+product out of the shop until you validate it again. Parts waiting on this are listed under `awaiting_release`
+in the status endpoint. If the part has a **revision** it's shown on the product page.
+
 A part with no sale price is sent as a **draft**, so nothing is ever sold for $0. The price is the
 lowest-quantity sell price break, converted to the shop currency with InvenTree's exchange rates if needed.
 
@@ -100,6 +106,7 @@ price and image on a part. This plugin has no dependency on how those get set.
 | Account parameter / Credit limit parameter | Company parameters that approve a credit account and cap it |
 | Account payment methods | WooCommerce payment method ids that mean "charge to account" |
 | Sync accounts to the shop | Keep approval and available credit up to date on shop logins |
+| Build to order needs a validated BOM / a locked part | When a build-to-order design counts as released |
 | Build Orders for build-to-order items | Shortfall only, full quantity, or off |
 
 ## Payments: online and on account
@@ -142,6 +149,9 @@ orders.
   quantity, if you choose), linked to the Sales Order. Its target date comes from the part's `Lead Time`
   parameter ("2 weeks", "10 working days", "3-4 weeks" - the longer end - or a number of days).
 - **Stock-only** part short of stock (two customers bought the last ones at once): a warning on the order.
+
+Build Orders are only made from a released design. If the BOM was edited (or the part unlocked) after the
+customer ordered, the order gets a warning instead, so you re-validate and create the build yourself.
 
 In-progress builds aren't counted, so an order is never left without a build. Cancel the new one if an existing
 build covers it. If InvenTree refuses a Build Order (e.g. you require validated or locked BOMs and this one

@@ -12,6 +12,10 @@ stock that's free for it:
 - Stock-only part short of stock (two customers bought the last units at
   once) -> a warning on the order for a person to sort out.
 
+Build Orders are only made from a released design: if the BOM was edited
+(un-validating it) or the part unlocked after the customer ordered, the
+order gets a warning instead of a Build Order.
+
 Build Orders that can't be created (e.g. InvenTree requires a validated or
 locked BOM and this one isn't) don't stop the order: the Sales Order is still
 created and the reason is added to its warnings.
@@ -74,6 +78,7 @@ def plan_builds(sales_order, config, modes, lead_times, woo_number):
     from django.db import transaction
     from django.utils import timezone
 
+    from .catalog import release_blocker
     from .orders import clip
 
     build_ids, warnings = [], []
@@ -98,6 +103,12 @@ def plan_builds(sales_order, config, modes, lead_times, woo_number):
             continue
         if not part.assembly:
             warnings.append(f"{part.name} is sold as build to order but isn't an assembly - no Build Order made")
+            continue
+        blocker = release_blocker(mode, part.assembly, part.bom_validated, part.locked, config)
+        if blocker:
+            # The design changed after the customer saw it (BOM edited / unlocked since). Don't build an
+            # unreleased design - a person decides.
+            warnings.append(f"No Build Order for {part.name}: {blocker} - re-validate it, then create the build")
             continue
 
         days = lead_time_days(lead_times.get(part_id))
