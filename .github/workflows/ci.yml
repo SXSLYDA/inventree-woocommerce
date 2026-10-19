@@ -40,11 +40,24 @@ jobs:
       - name: JS syntax
         run: node --check wordpress/inventree-shop/assets/account-blocks.js
 
+  panels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Render the InvenTree panels with React 19 + Mantine 9 (as InvenTree ships them)
+        run: |
+          mkdir /tmp/render && cd /tmp/render && npm init -y >/dev/null
+          npm install --silent react@19 react-dom@19 @mantine/core@9 @mantine/hooks@9 @mantine/notifications@9 jsdom@25
+          node "$GITHUB_WORKSPACE/tests/frontend/render_panels.mjs" "$GITHUB_WORKSPACE/inventree_woocommerce/static/shop_panels.js"
+
   publish:
     # Push a tag like v0.1.0 to publish. Set up PyPI "trusted publishing" for this repo first
     # (pypi.org > your project > Publishing > add GitHub, workflow ci.yml, environment pypi).
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, wordpress]
+    needs: [test, wordpress, panels]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

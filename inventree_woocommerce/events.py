@@ -19,6 +19,8 @@ WATCHED_TABLES = {
     "order_salesorder",                # order status changes (open/closed); credit used
     "company_company",                 # account customers
     "company_contact",                 # logins matched to account customers by contact email
+    "common_attachment",               # shop documents
+    "taggit_taggeditem",               # an attachment tagged for the shop
 }
 
 # Changes that can alter a credit account (approval, limit, logins, credit used).
@@ -72,6 +74,22 @@ def parts_for_event(event, row_id):
         from order.models import SalesOrderLineItem
 
         return set(SalesOrderLineItem.objects.filter(order_id=row_id).values_list("part_id", flat=True))
+
+    if table == "common_attachment":
+        from common.models import Attachment
+
+        return set(Attachment.objects.filter(pk=row_id, model_type="part").values_list("model_id", flat=True))
+
+    if table == "taggit_taggeditem":
+        from common.models import Attachment
+        from django.contrib.contenttypes.models import ContentType
+        from taggit.models import TaggedItem
+
+        item = TaggedItem.objects.filter(pk=row_id).first()
+        if item is None or item.content_type_id != ContentType.objects.get_for_model(Attachment).pk:
+            return set()
+        return set(Attachment.objects.filter(pk=item.object_id, model_type="part")
+                   .values_list("model_id", flat=True))
 
     return set()
 

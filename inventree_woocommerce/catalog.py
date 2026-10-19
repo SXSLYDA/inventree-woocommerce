@@ -86,6 +86,7 @@ class PartSnapshot:
     parameters: list[tuple[str, str]] = field(default_factory=list)  # (name, value) to publish
     image_key: str = ""  # stored file name of the part image ("" = no image)
     image_url: str = ""  # public, signed URL WooCommerce downloads the image from
+    documents: list[tuple[str, str]] = field(default_factory=list)  # (label, public URL)
 
 
 def product_title(snap, source):
@@ -128,6 +129,10 @@ def build_product(snap, mode, config):
     if snap.parameters:
         rows = "".join(f"<tr><th>{html.escape(n)}</th><td>{html.escape(v)}</td></tr>" for n, v in snap.parameters)
         long_html = f'<table class="inventree-parameters"><tbody>{rows}</tbody></table>'
+    if snap.documents:
+        items = "".join(f'<li><a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener">'
+                        f"{html.escape(label)}</a></li>" for label, url in snap.documents)
+        long_html += f'<h3>Documents</h3><ul class="inventree-documents">{items}</ul>'
 
     details = {
         "name": product_title(snap, config.title_source),
@@ -271,6 +276,44 @@ def sale_price(part, currency):
     return Decimal(price.amount)
 
 
+def document_label(comment, filename, tag):
+    """What a document is called on the product page: its comment without the tag marker, else the file name."""
+    import os
+    import re
+
+    label = re.sub(rf"\[\s*{re.escape(tag)}\s*\]", "", comment or "", flags=re.IGNORECASE).strip(" -:")
+    return label or os.path.basename(filename or "") or "Document"
+
+
+def shop_attachments(part_id, config):
+    """The part's attachments marked for the shop: tagged with DOCUMENT_TAG, or '[tag]' in the comment."""
+    if not config.publish_documents or not config.document_tag:
+        return []
+    from common.models import Attachment
+    from django.db.models import Q
+
+    tag = config.document_tag
+    return list(Attachment.objects.filter(model_type="part", model_id=part_id)
+                .filter(Q(tags__name__iexact=tag) | Q(comment__icontains=f"[{tag}]"))
+                .distinct().order_by("pk"))
+
+
+def part_documents(part_id, config):
+    """[(label, url)] for the product page. Uploaded files get a signed link; external links go as they are."""
+    from .images import signed_file_url
+
+    docs = []
+    for att in shop_attachments(part_id, config):
+        if att.attachment:
+            url = signed_file_url(config, att)
+            if url:
+                docs.append((document_label(att.comment, att.attachment.name, config.document_tag), url))
+        elif att.link:
+            docs.append((document_label(att.comment, att.link.rstrip("/").split("/")[-1], config.document_tag),
+                         att.link))
+    return docs
+
+
 def snapshot(part, config, mode):
     from .images import signed_image_url
 
@@ -307,4 +350,58 @@ def snapshot(part, config, mode):
         parameters=published,
         image_key=image_key,
         image_url=image_url,
+        documents=part_documents(part.pk, config),
     )
+
+
+def explain_part(part, config):
+    """Everything the part's Web Shop panel shows: is it in the shop, and if not, why not."""
+    from .models import ProductLink
+
+    flags = _parameter_values(config.shop_parameter, [part.pk])
+    flag = flags.get(part.pk, "")
+    in_category = part.category_id in _shop_category_ids(config)
+    modes, held = shop_modes(config, [part.pk], with_held=True)
+    mode = modes.get(part.pk) or resolve_mode(flag, in_category, config.category_default_mode)
+
+    reason = ""
+    if not part.active:
+        reason = "The part is inactive."
+    elif not part.salable:
+        reason = "The part isn't marked Salable."
+    elif parse_shop_value(flag) == OFF:
+        reason = f"The '{config.shop_parameter}' parameter says No."
+    elif part.pk in held:
+        reason = f"Waiting for release: {held[part.pk]}."
+    elif part.pk not in modes:
+        reason = (f"Not flagged for the shop. Set the '{config.shop_parameter}' parameter to Yes (sell from stock) "
+                  f"or Build (build to order).")
+
+    price = sale_price(part, config.currency) if part.salable else None
+    link = ProductLink.objects.filter(part_id=part.pk).first()
+    admin_url = (f"{config.woo_url}/wp-admin/post.php?post={link.woo_product_id}&action=edit"
+                 if link and link.woo_product_id and config.woo_url else "")
+    return {
+        "part_id": part.pk,
+        "in_shop": part.pk in modes,
+        "mode": mode if part.pk in modes or part.pk in held else None,
+        "reason": reason,
+        "held": held.get(part.pk, ""),
+        "flag": flag,
+        "in_category": in_category,
+        "price": format_price(price) if price else None,
+        "currency": config.currency,
+        "draft_no_price": part.pk in modes and not (price and price > 0),
+        "available": shop_available(part, config) if part.pk in modes else None,
+        "revision": (part.revision or "").strip(),
+        "documents": [{"label": label, "url": url} for label, url in part_documents(part.pk, config)],
+        "product": {
+            "id": link.woo_product_id,
+            "url": link.woo_permalink,
+            "admin_url": admin_url,
+            "published": link.published,
+            "stock_sent": link.stock_pushed,
+            "last_synced": link.last_synced_at,
+            "error": link.last_error,
+        } if link else None,
+    }

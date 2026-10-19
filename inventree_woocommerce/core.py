@@ -15,8 +15,13 @@ Mixins:
                  the affected parts for a re-sync (events.py).
                  Needs "Enable event integration" in InvenTree's plugin settings.
 - ScheduleMixin: full reconcile every 15 minutes, flush of anything left
-                 queued, and retry of failed orders.
+                 queued, account sync, and retry of failed orders.
                  Needs "Enable schedule integration" in InvenTree's plugin settings.
+- UserInterfaceMixin: "Web Shop" dashboard widget (staff), "Web Shop" panel
+                 on salable parts, "Web Order" panel on Sales Orders that
+                 came from the shop. One plain JS file, static/shop_panels.js,
+                 using the React and Mantine that InvenTree's UI provides -
+                 no build step. Needs "Enable interface integration".
 
 Other plugins can drive what's in the shop without depending on this one:
 set the shop parameter on a part, give it a sale price, set its image -
@@ -24,12 +29,13 @@ this plugin publishes whatever it finds.
 """
 
 from plugin import InvenTreePlugin
-from plugin.mixins import AppMixin, EventMixin, ScheduleMixin, SettingsMixin, UrlsMixin
+from plugin.mixins import AppMixin, EventMixin, ScheduleMixin, SettingsMixin, UrlsMixin, UserInterfaceMixin
 
 from .version import PLUGIN_VERSION
 
 
-class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, ScheduleMixin, InvenTreePlugin):
+class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, ScheduleMixin, UserInterfaceMixin,
+                        InvenTreePlugin):
     NAME = "WooCommerce"
     SLUG = "woocommerce"
     TITLE = "WooCommerce Shop"
@@ -143,6 +149,19 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
             "description": "Send each part's image to the shop.",
             "validator": bool,
             "default": True,
+        },
+        "PUBLISH_DOCUMENTS": {
+            "name": "Show documents on products",
+            "description": "List the part's attachments marked for the shop (drawings, datasheets, pinouts) as "
+                           "downloads on the product page.",
+            "validator": bool,
+            "default": True,
+        },
+        "DOCUMENT_TAG": {
+            "name": "Document tag",
+            "description": "An attachment is shown in the shop when it has this tag, or '[shop]' (this word in "
+                           "square brackets) in its comment. The rest of the comment becomes the link text.",
+            "default": "shop",
         },
         "PUBLIC_BASE_URL": {
             "name": "Public InvenTree URL",
@@ -268,6 +287,57 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
             "minutes": 30,
         },
     }
+
+    # --- UserInterfaceMixin ---
+
+    def _panel_source(self, function_name):
+        return self.plugin_static_file(f"shop_panels.js:{function_name}")
+
+    def get_ui_dashboard_items(self, request, context, **kwargs):
+        if not getattr(request.user, "is_staff", False):
+            return []
+        return [{
+            "key": "woocommerce-shop",
+            "title": "Web Shop",
+            "description": "WooCommerce sync status, problems, parts awaiting release and recent web orders.",
+            "icon": "ti:shopping-cart:outline",
+            "source": self._panel_source("renderShopDashboard"),
+            "options": {"width": 6, "height": 6},
+        }]
+
+    def get_ui_panels(self, request, context, **kwargs):
+        target_model = (context or {}).get("target_model")
+        target_id = (context or {}).get("target_id")
+        if not target_id:
+            return []
+
+        if target_model == "part":
+            from part.models import Part
+
+            from .models import ProductLink
+
+            part = Part.objects.filter(pk=target_id).only("pk", "salable").first()
+            if part and (part.salable or ProductLink.objects.filter(part_id=part.pk).exists()):
+                return [{
+                    "key": "woocommerce-part",
+                    "title": "Web Shop",
+                    "description": "Is this part in the shop, and if not, why not.",
+                    "icon": "ti:shopping-cart:outline",
+                    "source": self._panel_source("renderShopPartPanel"),
+                }]
+
+        if target_model == "salesorder":
+            from .models import WooOrder
+
+            if WooOrder.objects.filter(sales_order_id=target_id).exists():
+                return [{
+                    "key": "woocommerce-order",
+                    "title": "Web Order",
+                    "description": "The WooCommerce order this Sales Order came from.",
+                    "icon": "ti:world:outline",
+                    "source": self._panel_source("renderShopOrderPanel"),
+                }]
+        return []
 
     def setup_urls(self):
         from . import api

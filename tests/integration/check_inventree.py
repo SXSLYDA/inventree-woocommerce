@@ -373,6 +373,95 @@ print("withdrawn:", pushed)
 assert pushed["inventree_account_approved"] == "no" and pushed["inventree_credit_available"] == "0.00"
 assert CustomerLink.objects.get(woo_customer_id=77).approved_pushed is False
 
+# --- product documents: attachments marked for the shop ---
+from common.models import Attachment  # noqa: E402
+
+from inventree_woocommerce.images import file_signature  # noqa: E402
+
+drawing = Attachment.objects.create(model_type="part", model_id=harness.pk, comment="Wiring drawing [shop]",
+                                    attachment=ContentFile(b"%PDF-1.4 test drawing", name="drawing.pdf"))
+notes = Attachment.objects.create(model_type="part", model_id=harness.pk, comment="Build notes",
+                                  attachment=ContentFile(b"<script>alert(1)</script>", name="notes.html"))
+notes.tags.add("shop")
+secret = Attachment.objects.create(model_type="part", model_id=harness.pk, comment="internal costing",
+                                   attachment=ContentFile(b"%PDF-1.4 secret", name="costing.pdf"))
+handle_event("common_attachment.created", drawing.pk)
+upd = [u for u in FakeClient.calls[-1]["update"] if u["id"] == harness_product][0]
+print("documents html:", upd["description"][:300])
+assert "<h3>Documents</h3>" in upd["description"] and ">Wiring drawing<" in upd["description"]
+assert ">Build notes<" in upd["description"] and "costing" not in upd["description"]
+
+import re  # noqa: E402
+
+links = re.findall(r'href="(https://inventree\.example\.com[^"]+)"', upd["description"])
+pdf_url = [u for u in links if u.endswith("drawing.pdf")][0].replace("https://inventree.example.com", "")
+html_url = [u for u in links if u.endswith("notes.html")][0].replace("https://inventree.example.com", "")
+r = client.get(pdf_url, secure=True)
+print("pdf:", r.status_code, r["Content-Type"], r["Content-Disposition"])
+assert r.status_code == 200 and r["Content-Type"] == "application/pdf" and r["Content-Disposition"].startswith("inline")
+assert b"".join(r.streaming_content).startswith(b"%PDF")
+r = client.get(html_url, secure=True)
+print("html:", r.status_code, r["Content-Type"], r["Content-Disposition"])
+assert r.status_code == 200 and r["Content-Type"] == "application/octet-stream"
+assert r["Content-Disposition"].startswith("attachment") and "sandbox" in r["Content-Security-Policy"]
+forged = f"/plugin/woocommerce/file/{secret.pk}/{file_signature(secret.pk, secret.attachment.name)}/costing.pdf"
+assert client.get(forged, secure=True).status_code == 404, "untagged attachment must never be served"
+assert client.get(pdf_url.replace(pdf_url.split("/")[-2], "0" * 40), secure=True).status_code == 404
+
+# --- InvenTree panels ---
+from django.contrib.auth.models import User  # noqa: E402
+from django.test import RequestFactory  # noqa: E402
+
+staff = User.objects.create_superuser("shopadmin", "a@b.c", "pw")
+plain_user = User.objects.create_user("viewer", "v@b.c", "pw")
+staff_client = Client(HTTP_HOST="inventree.example.com")
+staff_client.force_login(staff)
+
+r = staff_client.get(f"/plugin/woocommerce/part/{harness.pk}/", secure=True)
+d = r.json()
+print("part panel:", r.status_code, d["in_shop"], d["mode"], d["reason"], len(d["documents"]), d["product"]["admin_url"])
+assert r.status_code == 200 and d["in_shop"] and d["mode"] == "build" and d["can_manage"]
+assert [doc["label"] for doc in d["documents"]] == ["Wiring drawing", "Build notes"]
+d = staff_client.get(f"/plugin/woocommerce/part/{plug.pk}/", secure=True).json()
+print("plug panel:", d["in_shop"], d["reason"])
+assert not d["in_shop"] and "says No" in d["reason"]
+r = staff_client.post(f"/plugin/woocommerce/part/{harness.pk}/", secure=True)
+print("send now:", r.status_code, r.json()["summary"])
+assert r.status_code == 200 and r.json()["summary"].get("updated") == 1
+
+viewer = Client(HTTP_HOST="inventree.example.com")
+viewer.force_login(plain_user)
+assert viewer.get(f"/plugin/woocommerce/part/{harness.pk}/", secure=True).json()["can_manage"] is False
+assert viewer.post(f"/plugin/woocommerce/part/{harness.pk}/", secure=True).status_code == 403
+assert viewer.get("/plugin/woocommerce/status/", secure=True).status_code == 403
+
+r = staff_client.get(f"/plugin/woocommerce/salesorder/{so3.pk}/", secure=True)
+d = r.json()
+print("order panel:", d["number"], d["on_account"], d["held"], d["warnings"])
+assert d["found"] and d["on_account"] and d["held"] and "Over credit limit" in d["warnings"][0]
+assert staff_client.get(f"/plugin/woocommerce/salesorder/{so.pk}/", secure=True).json()["builds"][0]["pk"] == build.pk
+
+status = staff_client.get("/plugin/woocommerce/status/", secure=True).json()
+print("dashboard:", status["products"], len(status["orders"]), status["orders"][0]["sales_order_reference"])
+assert status["orders"] and all("sales_order_reference" in o for o in status["orders"])
+
+rf = RequestFactory()
+req = rf.get("/")
+req.user = staff
+assert [p["key"] for p in plugin.get_ui_panels(req, {"target_model": "part", "target_id": harness.pk})] == ["woocommerce-part"]
+assert [p["key"] for p in plugin.get_ui_panels(req, {"target_model": "salesorder", "target_id": so.pk})] == ["woocommerce-order"]
+plain_so = SalesOrder.objects.create(customer=acme)
+assert plugin.get_ui_panels(req, {"target_model": "salesorder", "target_id": plain_so.pk}) == []
+assert plugin.get_ui_dashboard_items(req, {})[0]["source"].endswith("shop_panels.js:renderShopDashboard")
+req.user = plain_user
+assert plugin.get_ui_dashboard_items(req, {}) == []
+import os  # noqa: E402
+
+import inventree_woocommerce  # noqa: E402
+
+assert os.path.exists(os.path.join(os.path.dirname(inventree_woocommerce.__file__), "static", "shop_panels.js"))
+print("panels registered")
+
 # --- staff endpoint needs auth ---
 assert client.get("/plugin/woocommerce/status/", secure=True).status_code in (401, 403)
 notes = so.notes if isinstance(so.notes, str) else " ".join(n.content for n in so.notes)

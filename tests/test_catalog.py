@@ -124,3 +124,24 @@ def test_revision_shown_and_hashed():
     b, _ = build_product(snap(revision="C"), STOCK, Config())
     assert "<p>Revision B</p>" in a["short_description"]
     assert payload_hash(a) != payload_hash(b)
+
+
+def test_document_label():
+    from inventree_woocommerce.catalog import document_label
+
+    assert document_label("Wiring drawing [shop]", "attachments/part/2/drawing.pdf", "shop") == "Wiring drawing"
+    assert document_label("[ SHOP ] - Pinout", "x.pdf", "shop") == "Pinout"
+    assert document_label("[shop]", "attachments/part/2/drawing.pdf", "shop") == "drawing.pdf"
+    assert document_label("", "", "shop") == "Document"
+
+
+def test_documents_listed_and_escaped():
+    details, _ = build_product(
+        snap(documents=[("Drawing <rev B>", 'https://inv.example.com/plugin/woocommerce/file/1/abc/d.pdf?"x')]),
+        STOCK, Config())
+    assert "<h3>Documents</h3>" in details["description"]
+    assert "Drawing &lt;rev B&gt;" in details["description"]
+    assert '&quot;x"' in details["description"] and 'rel="noopener"' in details["description"]
+    with_docs = payload_hash(details)
+    without, _ = build_product(snap(), STOCK, Config())
+    assert payload_hash(without) != with_docs  # adding a document re-sends the listing

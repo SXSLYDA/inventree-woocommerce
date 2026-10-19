@@ -3,12 +3,15 @@
 An [InvenTree](https://inventree.org) plugin that runs a WooCommerce shop from your InvenTree data.
 
 - **Publishes parts** you flag (or a whole category) as WooCommerce products: title, SKU, price, description,
-  a specification table of chosen parameters, and the part image.
+  a specification table of chosen parameters, the part image, and **documents** (drawings, datasheets) from the
+  part's attachments.
 - **Keeps stock in sync** as it changes. Parts are sold either *from stock only* (no backorders) or
   *built to order* (backorders allowed, with a lead time shown).
 - **Turns paid orders into Sales Orders**: customer, contact, shipping address, line items, shipping and fees,
   with a note back on the WooCommerce order.
 - **Creates Build Orders** for build-to-order items that stock can't cover, linked to the Sales Order.
+- **Panels in InvenTree**: a Web Shop dashboard widget, a Web Shop panel on each salable part (in the shop? if
+  not, why not?), and a Web Order panel on Sales Orders that came from the shop.
 - **Credit accounts**: customers you approve in InvenTree can "charge to my account" at checkout (with their PO
   number), within a credit limit, using the companion WordPress plugin in `wordpress/inventree-shop/`.
   Everyone else pays online through any WooCommerce gateway (Stripe, PayPal, ...).
@@ -35,6 +38,12 @@ locked part*, once the part is **locked**). Edit the BOM later and InvenTree un-
 product out of the shop until you validate it again. Parts waiting on this are listed under `awaiting_release`
 in the status endpoint. If the part has a **revision** it's shown on the product page.
 
+**Documents.** Mark an attachment on the part for the shop by giving it the tag `shop`, or by putting `[shop]`
+in its comment. It's listed under "Documents" on the product page, named after its comment (without the marker)
+or its file name. External link attachments are listed as they are. Uploaded files are served through signed
+links that only work while the attachment is still marked and the part is still in the shop. PDFs and images open
+in the browser; any other file type downloads.
+
 A part with no sale price is sent as a **draft**, so nothing is ever sold for $0. The price is the
 lowest-quantity sell price break, converted to the shop currency with InvenTree's exchange rates if needed.
 
@@ -51,7 +60,8 @@ price and image on a part. This plugin has no dependency on how those get set.
    pip install inventree-woocommerce
    ```
 2. In InvenTree *Admin Center > Plugin Settings*, turn on **Enable URL integration**,
-   **Enable event integration** and **Enable schedule integration**. Then activate **WooCommerce Shop**.
+   **Enable event integration**, **Enable schedule integration** and **Enable interface integration**. Then
+   activate **WooCommerce Shop**.
 3. Create the plugin's tables. It ships normal Django migrations:
    ```
    invoke migrate        # or: invoke update
@@ -97,6 +107,7 @@ price and image on a part. This plugin has no dependency on how those get set.
 | Shop currency | Must match the store currency |
 | Stock reserve | Units of every part held back from the shop |
 | Send part images / Public InvenTree URL | Image sync |
+| Show documents on products / Document tag | Which attachments are listed as product downloads |
 | When a part leaves the shop | Draft, private, or move to trash |
 | Automatic sync | Event-driven updates plus a full re-check every 15 minutes |
 | Paid order statuses | Which statuses create a Sales Order (default `processing,completed`) |
@@ -108,6 +119,19 @@ price and image on a part. This plugin has no dependency on how those get set.
 | Sync accounts to the shop | Keep approval and available credit up to date on shop logins |
 | Build to order needs a validated BOM / a locked part | When a build-to-order design counts as released |
 | Build Orders for build-to-order items | Shortfall only, full quantity, or off |
+
+## Panels in InvenTree
+
+- **Dashboard → Web Shop** (staff): setup problems, products in the shop, sync problems, parts awaiting release,
+  approved account logins, last sync, failed orders with **Retry**, and recent web orders (account / on hold /
+  warnings, linked to their Sales Orders). Buttons: **Sync whole shop**, **Sync accounts**, **Test connection**.
+  Add it from the dashboard's widget list.
+- **Part → Web Shop** (salable parts): in the shop or not, and *why not* (inactive, not salable, not flagged,
+  shop parameter says No, waiting for BOM validation); sold from stock or built to order; price, stock offered,
+  revision, product page and WooCommerce edit links, last sync and any error, and the documents listed.
+  Staff get **Send to shop now**.
+- **Sales Order → Web Order** (orders from the shop): paid online or charged to account, on hold, warnings,
+  customer PO, payment and transaction, totals, customer note, and its Build Orders.
 
 ## Payments: online and on account
 
@@ -200,6 +224,10 @@ WooCommerce retries. Failed orders are retried automatically (up to 5 times), or
 |---|---|---|
 | `POST /plugin/woocommerce/webhook/order/` | WooCommerce (signed) | Order webhook |
 | `GET /plugin/woocommerce/image/<part>/<sig>.<ext>` | Public, signed | Part image for WooCommerce |
+| `GET /plugin/woocommerce/file/<attachment>/<sig>/<name>` | Public, signed | Product document |
+| `GET /plugin/woocommerce/part/<part>/` | Signed in | Part's shop status (the part panel) |
+| `POST /plugin/woocommerce/part/<part>/` | Staff | Re-send one part now |
+| `GET /plugin/woocommerce/salesorder/<so>/` | Signed in | Web order details (the Sales Order panel) |
 | `GET /plugin/woocommerce/status/` | Staff | Config problems, last sync, product errors, recent orders |
 | `POST /plugin/woocommerce/sync/` | Staff | Sync now |
 | `POST /plugin/woocommerce/test-connection/` | Staff | Check the API key |
@@ -215,7 +243,10 @@ actions.
 - API keys only go over https. Keys and the webhook secret are stored as protected plugin settings.
 - The webhook rejects anything without a valid signature. It never trusts prices from anywhere but the
   signed order body.
-- Image links are HMAC-signed per part and image file, and only work while the part is in the shop.
+- Image and document links are HMAC-signed per file, and only work while the part is in the shop (and, for
+  documents, while the attachment is still marked for the shop). Only PDFs and plain images are shown inline;
+  everything else is sent as a download with a sandboxing Content-Security-Policy, so an HTML or SVG attachment
+  can't run in InvenTree's domain.
 - Account approval and credit are only ever written by InvenTree (through the REST API key). The WordPress
   plugin checks them again when the order is placed, and InvenTree checks a third time when it arrives.
 
@@ -223,7 +254,6 @@ actions.
 
 - Custom quote requests with file uploads (with a companion WordPress plugin)
 - Shipment and tracking pushed back to WooCommerce
-- A status panel inside InvenTree
 
 ## Development
 
@@ -234,6 +264,10 @@ pytest -q && ruff check .
 
 `tests/integration/check_inventree.py` is an end-to-end check to run inside a **throwaway** InvenTree
 database. See the docstring at the top of that file.
+
+`tests/frontend/render_panels.mjs` renders the three InvenTree panels with React 19 and Mantine 9 in jsdom
+(see the comment at the top for the npm packages it needs). The panels are a single plain JavaScript file,
+`inventree_woocommerce/static/shop_panels.js`, with no build step.
 
 `wordpress/tests/test-gateway.php` checks the account payment method inside a **throwaway** WordPress install
 (with a small WooCommerce stand-in): `php wordpress/tests/test-gateway.php /path/to/wordpress`.

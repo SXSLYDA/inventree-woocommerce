@@ -27,6 +27,7 @@ class ProductLink(models.Model):
     )
     mode = models.CharField(max_length=10, choices=Mode.choices, blank=True)
     published = models.BooleanField(default=False, help_text="Currently live in the shop")
+    woo_permalink = models.CharField(max_length=500, blank=True, help_text="Product page in the shop")
 
     # Change detection: only send WooCommerce what actually changed.
     payload_hash = models.CharField(max_length=64, blank=True)

@@ -174,6 +174,7 @@ def _sync(config, part_ids):
                 continue
             if existing:
                 link.woo_product_id = existing["id"]
+                link.woo_permalink = str(existing.get("permalink") or "")[:500]
                 link.payload_hash = ""  # unknown content - send everything
                 link.stock_pushed = None
                 image_changed = config.push_images and not existing.get("images") and bool(snap.image_url)
@@ -214,6 +215,8 @@ def _send(client, config, creates, updates, unpublish, deletes, summary):
             return False
         if created:
             link.woo_product_id = result.get("id")
+        if result.get("permalink"):
+            link.woo_permalink = str(result["permalink"])[:500]
         if new_hash:
             link.payload_hash = new_hash
             link.mode = mode

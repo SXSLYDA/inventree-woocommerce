@@ -34,6 +34,9 @@ version = { attr = "inventree_woocommerce.version.PLUGIN_VERSION" }
 [tool.setuptools.packages.find]
 include = ["inventree_woocommerce*"]
 
+[tool.setuptools.package-data]
+inventree_woocommerce = ["static/*.js"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py310"
@@ -42,7 +45,7 @@ target-version = "py310"
 select = ["E", "F", "W", "I", "B", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/integration/*" = ["E402", "E741"]
+"tests/integration/*" = ["E402", "E741", "E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

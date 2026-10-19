@@ -34,6 +34,8 @@ class Config:
     currency: str = "AUD"
     stock_reserve: int = 0
     push_images: bool = True
+    publish_documents: bool = True
+    document_tag: str = "shop"
     public_base_url: str = ""
     unpublish_action: str = "draft"
     auto_sync: bool = True
@@ -103,6 +105,8 @@ def load_config(plugin=None) -> Config:
         currency=(s("SHOP_CURRENCY") or "AUD").strip().upper(),
         stock_reserve=max(int(s("STOCK_RESERVE") or 0), 0),
         push_images=bool(s("PUSH_IMAGES")),
+        publish_documents=bool(s("PUBLISH_DOCUMENTS")),
+        document_tag=(s("DOCUMENT_TAG") or "").strip(),
         public_base_url=public_base_url.rstrip("/"),
         unpublish_action=s("UNPUBLISH_ACTION") or "draft",
         auto_sync=bool(s("AUTO_SYNC")),
