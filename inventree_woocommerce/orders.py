@@ -1,18 +1,25 @@
 """
-WooCommerce order webhook -> InvenTree Sales Order.
+WooCommerce order webhook -> InvenTree Sales Order (+ Build Orders).
 
 Flow:
   1. webhook_view verifies the HMAC signature, stores/updates a WooOrder row
-     with the latest body, and - once the order is paid - queues
+     with the latest body, and - once the order is ready - queues
      process_woo_order on InvenTree's background worker. It always answers
      quickly, because WooCommerce disables webhooks that keep timing out.
-  2. process_woo_order creates the customer (or reuses it), contact,
-     shipping address, Sales Order, line items and shipping/fee lines, all
-     in one transaction. It runs at most once per WooCommerce order: the
+  2. process_woo_order creates the customer (or finds it), contact, shipping
+     address, Sales Order, line items, shipping/fee lines and Build Orders,
+     all in one transaction. It runs at most once per WooCommerce order: the
      WooOrder row is locked and re-checked first, so webhook retries and
-     duplicate order.updated deliveries can't create a second Sales Order.
+     duplicate deliveries can't create a second Sales Order.
+  3. After the transaction commits it fires events other plugins can act on
+     (see EVENTS), re-sends stock for what was sold, refreshes account credit,
+     and notes the Sales Order on the WooCommerce order.
 
-Paid = the order status is in PAID_STATUSES (default: processing, completed).
+Ready = paid online (status in PAID_STATUSES), or charged to account
+(payment method in ACCOUNT_PAYMENT_METHODS and status processing / on-hold /
+completed). Account orders are checked against InvenTree's own account
+approval and credit limit; if either fails the Sales Order is still created,
+but put On Hold with the reason in its warnings.
 """
 
 import base64
@@ -28,6 +35,16 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 TASK_PATH = "inventree_woocommerce.tasks.process_woo_order"
+
+# Events fired for other plugins (InvenTree EventMixin). Arguments are ids only.
+EVENT_SALES_ORDER = "woocommerce.salesorder_created"
+#   id=<SalesOrder id>, woo_order_id, woo_order_number, on_account (bool), held (bool), build_ids (list)
+EVENT_BUILD = "woocommerce.build_created"
+#   id=<Build id>, sales_order=<SalesOrder id>, part=<Part id>, quantity, woo_order_id
+EVENTS = (EVENT_SALES_ORDER, EVENT_BUILD)
+
+ACCOUNT_READY_STATUSES = ("processing", "on-hold", "completed")
+PO_META_KEYS = ("inventree_po_number", "po_number", "purchase_order_number", "_po_number")
 
 
 # --- pure helpers (unit tested) ----------------------------------------------------
@@ -76,6 +93,28 @@ def clip(value, length):
     return (str(value or "").strip())[:length]
 
 
+def order_meta(order, *keys):
+    """First non-blank value of the given order meta keys."""
+    wanted = [k.lower() for k in keys]
+    values = {str(m.get("key", "")).lower(): m.get("value") for m in order.get("meta_data") or []}
+    for key in wanted:
+        value = values.get(key)
+        if value not in (None, "") and not isinstance(value, dict | list):
+            return str(value).strip()
+    return ""
+
+
+def is_account_order(order, config):
+    return str(order.get("payment_method") or "").lower() in config.account_methods
+
+
+def ready_to_process(order, config):
+    status = str(order.get("status") or "").lower()
+    if status in config.paid_statuses:
+        return True
+    return is_account_order(order, config) and status in ACCOUNT_READY_STATUSES
+
+
 # --- webhook ---------------------------------------------------------------------------
 
 def webhook_view(request):
@@ -108,15 +147,14 @@ def webhook_view(request):
     except (ValueError, KeyError, TypeError):
         return JsonResponse({"detail": "Body is not a WooCommerce order."}, status=400)
 
-    status = str(order.get("status") or "").lower()
     record, _ = WooOrder.objects.get_or_create(woo_order_id=order_id)
     record.woo_order_number = clip(order.get("number") or order_id, 64)
-    record.woo_status = clip(status, 32)
+    record.woo_status = clip(str(order.get("status") or "").lower(), 32)
     record.payload = order
     fields = ["woo_order_number", "woo_status", "payload", "updated_at"]
 
     should_queue = (
-        status in config.paid_statuses
+        ready_to_process(order, config)
         and record.sales_order_id is None
         and record.state in (WooOrder.State.RECEIVED, WooOrder.State.FAILED)
     )
@@ -153,10 +191,13 @@ def process_woo_order(record_pk):
             if record is None or record.sales_order_id is not None:
                 return
             record.attempts += 1
-            sales_order, warnings, part_ids = _create_sales_order(record.payload, config)
-            record.sales_order_id = sales_order.pk
+            result = _create_sales_order(record.payload, config)
+            record.sales_order_id = result["sales_order"].pk
             record.state = WooOrder.State.CREATED
-            record.warnings = "\n".join(warnings)
+            record.on_account = result["on_account"]
+            record.held = result["held"]
+            record.build_order_ids = result["build_ids"]
+            record.warnings = "\n".join(result["warnings"])
             record.error = ""
             record.processed_at = timezone.now()
             record.save()
@@ -175,12 +216,33 @@ def process_woo_order(record_pk):
         )
         return
 
-    # Outside the transaction: these talk to other systems / queue work.
+    # Committed. Everything below talks to other systems or queues work.
+    sales_order = result["sales_order"]
+    _fire(EVENT_SALES_ORDER, id=sales_order.pk, woo_order_id=record.woo_order_id,
+          woo_order_number=record.woo_order_number, on_account=record.on_account, held=record.held,
+          build_ids=list(result["build_ids"]))
+    for build in result["builds"]:
+        _fire(EVENT_BUILD, id=build["id"], sales_order=sales_order.pk, part=build["part"],
+              quantity=build["quantity"], woo_order_id=record.woo_order_id)
+
     from .sync import queue_parts
 
-    queue_parts(part_ids)  # demand changed - re-send stock for what was sold
+    queue_parts(result["part_ids"])  # demand changed - re-send stock for what was sold
+    if config.sync_accounts and config.account_parameter:
+        from .accounts import queue_account_sync
+
+        queue_account_sync()  # credit used changed
     if config.write_back_notes:
-        _write_back_note(config, record.woo_order_id, sales_order, warnings)
+        _write_back_note(config, record.woo_order_id, sales_order, result)
+
+
+def _fire(event, **kwargs):
+    try:
+        from plugin.base.event.events import trigger_event
+
+        trigger_event(event, **kwargs)
+    except Exception:
+        logger.exception("Could not fire event %s", event)
 
 
 def _attempts(record_pk):
@@ -189,12 +251,17 @@ def _attempts(record_pk):
     return WooOrder.objects.filter(pk=record_pk).values_list("attempts", flat=True).first() or 0
 
 
-def _write_back_note(config, woo_order_id, sales_order, warnings):
+def _write_back_note(config, woo_order_id, sales_order, result):
     from .woo_client import WooClient, WooError
 
-    note = f"InvenTree Sales Order {sales_order.reference} created."
-    if warnings:
-        note += " Needs checking: " + "; ".join(warnings)
+    note = f"InvenTree Sales Order {sales_order.reference} created"
+    if result["build_refs"]:
+        note += f", Build Order(s) {', '.join(result['build_refs'])}"
+    note += "."
+    if result["held"]:
+        note += " The Sales Order is ON HOLD."
+    if result["warnings"]:
+        note += " Needs checking: " + "; ".join(result["warnings"])
     try:
         WooClient.from_config(config).add_order_note(woo_order_id, note)
     except WooError as exc:
@@ -202,29 +269,53 @@ def _write_back_note(config, woo_order_id, sales_order, warnings):
 
 
 def _create_sales_order(order, config):
+    from build.models import Build
     from djmoney.money import Money
     from order.models import SalesOrder, SalesOrderExtraLine, SalesOrderLineItem
     from part.models import Part
 
+    from .accounts import approved_accounts, credit_available, credit_used, format_credit, link_customer
+    from .builds import plan_builds
     from .models import ProductLink
 
     currency = (order.get("currency") or config.currency).upper()
+    on_account = is_account_order(order, config)
     customer, contact = _customer_and_contact(order, config, currency)
     address = _address(customer, order)
 
     warnings = []
+    held = False
     billing = order.get("billing") or {}
     number = order.get("number") or order.get("id")
+    po_number = order_meta(order, *PO_META_KEYS)
+    order_total = money(order.get("total"))
+
+    # --- account checks (InvenTree's own data, not what the shop believed) ---
+    if on_account:
+        approved = approved_accounts(config, [customer.pk])
+        if customer.pk not in approved:
+            held = True
+            warnings.append(f"Charged to account, but {customer.name} isn't an approved shop account")
+        elif approved[customer.pk] is not None:
+            left = credit_available(approved[customer.pk], credit_used(customer.pk, currency))
+            if order_total > left:
+                held = True
+                warnings.append(f"Over credit limit: order {format_credit(order_total)} {currency}, "
+                                f"{format_credit(left)} {currency} available")
 
     notes = [f"WooCommerce order #{number}"]
-    if order.get("payment_method_title"):
+    if on_account:
+        notes.append("Charged to account - invoice the customer")
+    elif order.get("payment_method_title"):
         notes.append(f"Paid by: {order['payment_method_title']}")
     if order.get("transaction_id"):
         notes.append(f"Transaction: {order['transaction_id']}")
+    if po_number:
+        notes.append(f"Customer PO: {po_number}")
     coupons = [c.get("code") for c in order.get("coupon_lines") or [] if c.get("code")]
     if coupons:
         notes.append(f"Coupons: {', '.join(coupons)} (discounts are already in the line prices)")
-    if config.customer_mode == "shared":
+    if customer.pk == config.shared_customer_id:
         notes.append(f"Customer: {customer_name(order)} <{billing.get('email', '')}>"
                      f"{' ' + billing['phone'] if billing.get('phone') else ''}")
     if order.get("customer_note"):
@@ -238,29 +329,34 @@ def _create_sales_order(order, config):
         customer=customer,
         contact=contact,
         address=address,
-        customer_reference=clip(f"WC-{number}", 64),
-        description=clip(f"Web shop order #{number}", 250),
+        customer_reference=clip(po_number or f"WC-{number}", 64),
+        description=clip(f"Web shop order #{number}" + (" (on account)" if on_account else ""), 250),
         link=order_admin_url(config.woo_url, order.get("id")),
         order_currency=currency,
-        metadata={"woocommerce": {"order_id": order.get("id"), "number": str(number)}},
+        metadata={"woocommerce": {"order_id": order.get("id"), "number": str(number),
+                                  "on_account": on_account, "po_number": po_number}},
     )
 
     product_ids = [li.get("product_id") for li in order.get("line_items") or [] if li.get("product_id")]
-    links = {link.woo_product_id: link.part_id
-             for link in ProductLink.objects.filter(woo_product_id__in=product_ids)}
-    parts = Part.objects.in_bulk(set(links.values()))
+    product_links = {link.woo_product_id: link
+                     for link in ProductLink.objects.filter(woo_product_id__in=product_ids)}
+    parts = Part.objects.in_bulk({link.part_id for link in product_links.values()})
     sold_part_ids = set()
+    modes, lead_times = {}, {}
 
     for line in order.get("line_items") or []:
         qty = money(line.get("quantity"))
         price = Money(unit_price(line), currency)
-        part = parts.get(links.get(line.get("product_id")))
+        link = product_links.get(line.get("product_id"))
+        part = parts.get(link.part_id) if link else None
         if part is not None:
             SalesOrderLineItem.objects.create(
                 order=sales_order, part=part, quantity=qty, sale_price=price,
                 reference=clip(line.get("sku"), 100),
             )
             sold_part_ids.add(part.pk)
+            modes[part.pk] = link.mode or "stock"
+            lead_times[part.pk] = _lead_time(part, config)
         else:
             # Not a product this plugin manages - keep the money on the order and flag it.
             SalesOrderExtraLine.objects.create(
@@ -281,12 +377,36 @@ def _create_sales_order(order, config):
             description=clip(f"Fee: {fee.get('name') or 'Fee'}", 250),
         )
 
-    attach_notes(sales_order, f"WooCommerce order #{number}", notes)
+    build_ids, build_warnings = plan_builds(sales_order, config, modes, lead_times, number)
+    warnings += build_warnings
+    builds = list(Build.objects.filter(pk__in=build_ids).values("pk", "reference", "part_id", "quantity"))
 
-    if config.issue_orders:
+    attach_notes(sales_order, f"WooCommerce order #{number}", notes + [f"Needs checking: {w}" for w in warnings])
+
+    if held:
+        sales_order.hold_order()
+    elif config.issue_orders:
         sales_order.issue_order()
 
-    return sales_order, warnings, sold_part_ids
+    link_customer(order.get("customer_id"), billing.get("email"), customer.pk)
+
+    return {
+        "sales_order": sales_order,
+        "warnings": warnings,
+        "part_ids": sold_part_ids,
+        "on_account": on_account,
+        "held": held,
+        "build_ids": build_ids,
+        "build_refs": [b["reference"] for b in builds],
+        "builds": [{"id": b["pk"], "part": b["part_id"], "quantity": b["quantity"]} for b in builds],
+    }
+
+
+def _lead_time(part, config):
+    if not config.lead_time_parameter:
+        return ""
+    param = part.parameters.filter(template__name__iexact=config.lead_time_parameter).first()
+    return (param.data or "").strip() if param else ""
 
 
 def attach_notes(instance, title, lines):
@@ -312,6 +432,46 @@ def attach_notes(instance, title, lines):
         instance.save()
 
 
+def _find_customer(order, config):
+    """
+    The existing InvenTree customer for this order, or None.
+
+    Tried in order: the company this shop login was linked to before; a company
+    whose contact has the billing email; a company with the billing email.
+    In 'shared' customer mode only approved account companies are matched -
+    everyone else goes under the shared customer.
+    """
+    from company.models import Company, Contact
+
+    from .accounts import approved_accounts
+    from .models import CustomerLink
+
+    email = clip((order.get("billing") or {}).get("email"), 254)
+    candidates = []
+    if order.get("customer_id"):
+        link = CustomerLink.objects.filter(woo_customer_id=order["customer_id"]).first()
+        if link and link.company_id:
+            candidates.append(link.company_id)
+    if email:
+        candidates += list(Contact.objects.filter(email__iexact=email, company__is_customer=True)
+                           .order_by("company_id").values_list("company_id", flat=True))
+        candidates += list(Company.objects.filter(email__iexact=email, is_customer=True)
+                           .order_by("pk").values_list("pk", flat=True))
+    if not candidates:
+        return None
+
+    approved = approved_accounts(config, candidates)
+    if config.customer_mode == "shared":
+        candidates = [c for c in candidates if c in approved]
+    # An approved account wins over a plain customer record with the same email.
+    ranked = sorted(dict.fromkeys(candidates), key=lambda c: (c not in approved, candidates.index(c)))
+    companies = Company.objects.in_bulk(ranked)
+    for cid in ranked:
+        if cid in companies:
+            return companies[cid]
+    return None
+
+
 def _customer_and_contact(order, config, currency):
     from company.models import Company, Contact
 
@@ -319,15 +479,12 @@ def _customer_and_contact(order, config, currency):
     email = clip(billing.get("email"), 254)
     phone = clip(billing.get("phone"), 50)
 
-    if config.customer_mode == "shared":
+    customer = _find_customer(order, config)
+    if customer is None and config.customer_mode == "shared":
         customer = Company.objects.filter(pk=config.shared_customer_id).first()
         if customer is None:
             raise OrderError("CUSTOMER_MODE is 'shared' but SHARED_CUSTOMER isn't set to a company.")
         return customer, None
-
-    customer = None
-    if email:
-        customer = Company.objects.filter(email__iexact=email, is_customer=True).order_by("pk").first()
     if customer is None:
         customer = Company.objects.create(
             name=clip(customer_name(order), 100), email=email, phone=phone, is_customer=True,

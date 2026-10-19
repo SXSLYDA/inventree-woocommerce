@@ -31,11 +31,20 @@ jobs:
           EOF
           PYTHONPATH=.:/tmp DJANGO_SETTINGS_MODULE=settings django-admin makemigrations inventree_woocommerce --check --dry-run
 
+  wordpress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP syntax
+        run: find wordpress -name "*.php" -print0 | xargs -0 -n1 php -l
+      - name: JS syntax
+        run: node --check wordpress/inventree-shop/assets/account-blocks.js
+
   publish:
     # Push a tag like v0.1.0 to publish. Set up PyPI "trusted publishing" for this repo first
     # (pypi.org > your project > Publishing > add GitHub, workflow ci.yml, environment pypi).
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
+    needs: [test, wordpress]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

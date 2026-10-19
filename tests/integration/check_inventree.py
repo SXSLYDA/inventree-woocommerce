@@ -105,12 +105,24 @@ class FakeClient:
     def add_order_note(self, order_id, note, customer_note=False):
         FakeClient.calls.append({"note": (order_id, note)})
 
+    customers = {}
+
+    def find_customer_by_email(self, email):
+        return FakeClient.customers.get(email.lower())
+
+    def batch(self, resource, create=(), update=(), delete=()):
+        FakeClient.calls.append({"resource": resource, "update": list(update)})
+        return {"create": [], "update": [{"id": u["id"]} for u in update], "delete": []}
+
 
 sync_mod.WooClient = FakeClient
 import inventree_woocommerce.orders  # noqa: E402,F401
 import inventree_woocommerce.woo_client as wc  # noqa: E402
 
 wc.WooClient = FakeClient
+
+fired = []
+inventree_woocommerce.orders._fire = lambda event, **kw: fired.append((event, kw))
 
 summary = sync_mod.sync_parts(None)
 print("first sync:", summary)
@@ -194,6 +206,24 @@ assert so.customer.name == "Pit Mining Pty Ltd" and so.customer.is_customer
 assert so.lines.get(part=plug).sale_price.amount == Decimal("4.5")
 assert "isn't linked" in rec.warnings
 
+# --- phase 2: the build-to-order harness had no stock -> Build Order for 1, linked, with a target date ---
+from datetime import date, timedelta  # noqa: E402
+
+from build.models import Build  # noqa: E402
+
+print("builds:", rec.build_order_ids)
+assert len(rec.build_order_ids) == 1, rec.warnings
+build = Build.objects.get(pk=rec.build_order_ids[0])
+print("build:", build.reference, build.part.name, build.quantity, build.sales_order_id, build.target_date)
+assert build.part == harness and build.quantity == 1 and build.sales_order_id == so.pk
+assert build.target_date == date.today() + timedelta(days=14)
+events = [e for e, _ in fired]
+print("events:", events)
+assert events == ["woocommerce.salesorder_created", "woocommerce.build_created"]
+assert fired[0][1]["id"] == so.pk and fired[0][1]["build_ids"] == [build.pk]
+assert fired[1][1]["part"] == harness.pk and fired[1][1]["sales_order"] == so.pk
+assert not rec.on_account and not rec.held
+
 # duplicate delivery must not create a second order
 r = client.post("/plugin/woocommerce/webhook/order/", data=body, content_type="application/json", secure=True,
                 HTTP_X_WC_WEBHOOK_SIGNATURE=sig, HTTP_X_WC_WEBHOOK_RESOURCE="order")
@@ -213,6 +243,95 @@ handle_event("common_parameter.saved", Parameter.objects.get(model_id=plug.pk, t
 print("after unpublish:", FakeClient.calls[-1]["update"])
 assert FakeClient.calls[-1]["update"][0]["status"] == "draft"
 assert not ProductLink.objects.get(part_id=plug.pk).published
+
+# --- credit accounts ---
+from common.models import ParameterTemplate as PT  # noqa: E402
+from company.models import Contact  # noqa: E402
+from django.contrib.contenttypes.models import ContentType  # noqa: E402
+
+from inventree_woocommerce.accounts import sync_accounts  # noqa: E402
+from inventree_woocommerce.models import CustomerLink  # noqa: E402
+
+acme = Company.objects.create(name="Acme Trade", is_customer=True, email="accounts@acme.example")
+Contact.objects.create(company=acme, name="Buyer", email="Buyer@Acme.example")
+company_ct = ContentType.objects.get_for_model(Company)
+
+
+def cparam(company, name, value):
+    t, _ = PT.objects.get_or_create(name=name)
+    Parameter.objects.update_or_create(model_type=company_ct, model_id=company.pk, template=t,
+                                       defaults={"data": value})
+
+
+cparam(acme, "Shop Account", "Yes")
+cparam(acme, "Credit Limit", "1000")
+FakeClient.customers = {"buyer@acme.example": {"id": 77, "email": "buyer@acme.example"}}
+
+def last_push():
+    call = [c for c in FakeClient.calls if c.get("resource") == "customers"][-1]
+    return call["update"][0]["id"], {m["key"]: m["value"] for m in call["update"][0]["meta_data"]}
+
+
+summary = sync_accounts(load_config())
+print("account sync:", summary, FakeClient.calls[-1])
+pushed = {m["key"]: m["value"] for m in FakeClient.calls[-1]["update"][0]["meta_data"]}
+assert FakeClient.calls[-1]["resource"] == "customers" and FakeClient.calls[-1]["update"][0]["id"] == 77
+assert pushed == {"inventree_account_approved": "yes", "inventree_credit_available": "1000.00",
+                  "inventree_account_company": "Acme Trade"}
+n_calls = len(FakeClient.calls)
+sync_accounts(load_config())
+assert len(FakeClient.calls) == n_calls, "unchanged account must not be re-sent"
+
+plug_product = ProductLink.objects.get(part_id=plug.pk).woo_product_id
+
+
+def post_order(oid, email, total, method="inventree_account", customer_id=77, po=None, status="processing"):
+    o = {"id": oid, "number": str(oid), "status": status, "currency": "AUD", "total": str(total),
+         "total_tax": "0", "payment_method": method, "payment_method_title": "Charge to my account",
+         "customer_id": customer_id,
+         "billing": {"first_name": "Bob", "company": "Acme", "email": email, "address_1": "9 Pit Rd",
+                     "postcode": "6000", "city": "Perth", "country": "AU"},
+         "line_items": [{"product_id": plug_product, "sku": "DT06-2S", "name": "DT06-2S", "quantity": 1,
+                         "total": str(total)}],
+         "meta_data": [{"key": "inventree_po_number", "value": po}] if po else []}
+    b = json.dumps(o).encode()
+    sg = base64.b64encode(hmac.new(b"whsec", b, hashlib.sha256).digest()).decode()
+    r = client.post("/plugin/woocommerce/webhook/order/", data=b, content_type="application/json", secure=True,
+                    HTTP_X_WC_WEBHOOK_SIGNATURE=sg, HTTP_X_WC_WEBHOOK_RESOURCE="order")
+    assert r.status_code == 200, r.content
+    rec = WooOrder.objects.get(woo_order_id=oid)
+    so = SalesOrder.objects.filter(pk=rec.sales_order_id).first()
+    return rec, so
+
+
+rec2, so2 = post_order(9101, "buyer@acme.example", 300, po="PO-555")
+print("account order:", rec2.state, so2.customer.name, so2.customer_reference, so2.status, rec2.warnings)
+assert so2.customer == acme and so2.customer_reference == "PO-555"
+assert rec2.on_account and not rec2.held and so2.status == 10
+
+# the order itself queued an account refresh (worker not running -> ran inline)
+_, pushed = last_push()
+print("credit after order:", pushed["inventree_credit_available"])
+assert pushed["inventree_credit_available"] == "700.00"
+
+rec3, so3 = post_order(9102, "buyer@acme.example", 900)
+print("over limit:", so3.status, rec3.warnings)
+assert rec3.held and so3.status == 25 and "Over credit limit" in rec3.warnings
+
+rec4, so4 = post_order(9103, "stranger@else.example", 50, customer_id=88)
+print("not an account:", so4.customer.name, so4.status, rec4.warnings)
+assert rec4.held and so4.status == 25 and "isn't an approved shop account" in rec4.warnings
+assert so4.customer != acme
+
+rec5, so5 = post_order(9104, "bob@paid.example", 40, method="stripe", customer_id=0, status="on-hold")
+assert rec5.state == "received" and so5 is None, "unpaid online order must wait"
+
+cparam(acme, "Shop Account", "No")
+sync_accounts(load_config())
+_, pushed = last_push()
+print("withdrawn:", pushed)
+assert pushed["inventree_account_approved"] == "no" and pushed["inventree_credit_available"] == "0.00"
+assert CustomerLink.objects.get(woo_customer_id=77).approved_pushed is False
 
 # --- staff endpoint needs auth ---
 assert client.get("/plugin/woocommerce/status/", secure=True).status_code in (401, 403)

@@ -196,6 +196,41 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
             "validator": bool,
             "default": True,
         },
+        # --- Credit accounts ---
+        "ACCOUNT_PARAMETER": {
+            "name": "Account parameter",
+            "description": "Company parameter that approves a customer for 'Charge to my account' at checkout "
+                           "(Yes / No). Their logins are matched by the company email and its contacts' emails.",
+            "default": "Shop Account",
+        },
+        "CREDIT_LIMIT_PARAMETER": {
+            "name": "Credit limit parameter",
+            "description": "Company parameter holding the account's credit limit in the shop currency. Blank = "
+                           "no limit. Checked against the value of the company's open Sales Orders.",
+            "default": "Credit Limit",
+        },
+        "ACCOUNT_PAYMENT_METHODS": {
+            "name": "Account payment methods",
+            "description": "Comma-separated WooCommerce payment method ids that mean 'charge to account'. "
+                           "inventree_account is the companion WordPress plugin's method.",
+            "default": "inventree_account",
+        },
+        "SYNC_ACCOUNTS": {
+            "name": "Sync accounts to the shop",
+            "description": "Keep account approval and available credit up to date on each matching shop login "
+                           "(needed for the companion plugin's 'Charge to my account').",
+            "validator": bool,
+            "default": True,
+        },
+        # --- Build Orders ---
+        "BUILD_ORDERS": {
+            "name": "Build Orders for build-to-order items",
+            "description": "When a web order includes build-to-order parts, create Build Orders linked to the "
+                           "Sales Order.",
+            "choices": [("shortfall", "For the quantity not covered by free stock"),
+                        ("always", "For the full quantity ordered"), ("off", "Never")],
+            "default": "shortfall",
+        },
     }
 
     SCHEDULED_TASKS = {
@@ -208,6 +243,10 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
             "func": "inventree_woocommerce.tasks.flush_pending_syncs",
             "schedule": "I",
             "minutes": 5,
+        },
+        "sync_accounts": {
+            "func": "inventree_woocommerce.tasks.sync_accounts",
+            "schedule": "H",
         },
         "retry_orders": {
             "func": "inventree_woocommerce.tasks.retry_failed_orders",
@@ -232,6 +271,4 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
         from .config import load_config
         from .events import handle_event
 
-        if not load_config(self).auto_sync:
-            return
-        handle_event(event, kwargs.get("id"))
+        handle_event(event, kwargs.get("id"), load_config(self))

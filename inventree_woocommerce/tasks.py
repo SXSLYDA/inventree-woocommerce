@@ -51,3 +51,23 @@ def retry_failed_orders():
         sales_order_id__isnull=True, attempts__lt=MAX_ORDER_ATTEMPTS,
     ).values_list("pk", flat=True):
         process(pk)
+
+
+def sync_accounts():
+    """Hourly: account approval/credit for every login, and find newly registered logins."""
+    from .accounts import sync_accounts as run
+    from .config import load_config
+
+    config = load_config()
+    if config.sync_accounts:
+        logger.info("WooCommerce account sync: %s", run(config, lookup_new=True))
+
+
+def sync_account_links():
+    """After a change: refresh logins already linked (no searching for new ones)."""
+    from .accounts import sync_accounts as run
+    from .config import load_config
+
+    config = load_config()
+    if config.sync_accounts:
+        run(config, lookup_new=False)

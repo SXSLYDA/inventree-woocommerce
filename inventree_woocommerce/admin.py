@@ -8,12 +8,20 @@ re-import with some models already registered raises AlreadyRegistered.
 
 from django.contrib import admin
 
-from .models import PendingSync, ProductLink, SyncState, WooOrder
+from .models import CustomerLink, PendingSync, ProductLink, SyncState, WooOrder
 
 
 @admin.register(PendingSync)
 class PendingSyncAdmin(admin.ModelAdmin):
     list_display = ("part_id", "queued_at")
+
+
+@admin.register(CustomerLink)
+class CustomerLinkAdmin(admin.ModelAdmin):
+    list_display = ("woo_customer_id", "email", "company_id", "approved_pushed", "credit_pushed", "last_synced_at")
+    list_filter = ("approved_pushed",)
+    search_fields = ("email", "woo_customer_id", "company_id")
+    readonly_fields = ("approved_pushed", "credit_pushed", "company_name_pushed", "last_synced_at")
 
 
 @admin.register(SyncState)
@@ -43,9 +51,9 @@ class ProductLinkAdmin(admin.ModelAdmin):
 
 @admin.register(WooOrder)
 class WooOrderAdmin(admin.ModelAdmin):
-    list_display = ("woo_order_number", "woo_status", "state", "sales_order_id", "attempts", "received_at",
-                    "warnings", "error")
-    list_filter = ("state", "woo_status")
+    list_display = ("woo_order_number", "woo_status", "state", "sales_order_id", "on_account", "held",
+                    "build_order_ids", "attempts", "received_at", "warnings", "error")
+    list_filter = ("state", "woo_status", "on_account", "held")
     search_fields = ("woo_order_number", "woo_order_id", "error")
     readonly_fields = ("woo_order_id", "payload", "received_at", "updated_at", "processed_at")
     actions = ["retry"]

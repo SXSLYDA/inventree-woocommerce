@@ -16,8 +16,13 @@ WATCHED_TABLES = {
     "stock_stockitem",                 # stock levels
     "build_builditem",                 # stock allocated to builds
     "order_salesorderlineitem",        # sales order demand
-    "order_salesorder",                # order status changes (open/closed)
+    "order_salesorder",                # order status changes (open/closed); credit used
+    "company_company",                 # account customers
+    "company_contact",                 # logins matched to account customers by contact email
 }
+
+# Changes that can alter a credit account (approval, limit, logins, credit used).
+ACCOUNT_TABLES = {"company_company", "company_contact", "order_salesorder"}
 WATCHED_ACTIONS = ("created", "saved")
 
 
@@ -71,8 +76,30 @@ def parts_for_event(event, row_id):
     return set()
 
 
-def handle_event(event, row_id):
+def affects_accounts(event, row_id):
+    table = str(event).rpartition(".")[0]
+    if table in ACCOUNT_TABLES:
+        return True
+    if table == "common_parameter" and row_id is not None:
+        from common.models import Parameter
+        from company.models import Company
+        from django.contrib.contenttypes.models import ContentType
+
+        return Parameter.objects.filter(pk=row_id, model_type=ContentType.objects.get_for_model(Company)).exists()
+    return False
+
+
+def handle_event(event, row_id, config=None):
+    from .config import load_config
     from .models import ProductLink
+
+    config = config or load_config()
+    if config.sync_accounts and config.account_parameter and affects_accounts(event, row_id):
+        from .accounts import queue_account_sync
+
+        queue_account_sync()
+    if not config.auto_sync:
+        return
 
     part_ids = {p for p in parts_for_event(event, row_id) if p}
     if not part_ids:

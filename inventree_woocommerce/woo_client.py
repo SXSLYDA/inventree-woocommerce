@@ -97,8 +97,25 @@ class WooClient:
         return None
 
     def batch_products(self, create=(), update=(), delete=()):
+        return self.batch("products", create=create, update=update, delete=delete)
+
+    # --- customers ---
+
+    def find_customer_by_email(self, email):
+        """The shop login with this email (any role), or None."""
+        if not email:
+            return None
+        found = self.get("customers", email=email, role="all", per_page=5)
+        for customer in found or []:
+            if str(customer.get("email", "")).strip().lower() == email.strip().lower():
+                return customer
+        return None
+
+    # --- batches ---
+
+    def batch(self, resource, create=(), update=(), delete=()):
         """
-        Send create/update/delete through products/batch in chunks of BATCH_LIMIT.
+        Send create/update/delete through <resource>/batch in chunks of BATCH_LIMIT.
 
         Returns {"create": [...], "update": [...], "delete": [...]} with one
         result per input, in input order. A per-item failure comes back as
@@ -112,7 +129,7 @@ class WooClient:
             body = {}
             for action, item in chunk:
                 body.setdefault(action, []).append(item)
-            resp = self.post("products/batch", body) or {}
+            resp = self.post(f"{resource}/batch", body) or {}
             for action in ("create", "update", "delete"):
                 sent = len(body.get(action, []))
                 got = list(resp.get(action) or [])

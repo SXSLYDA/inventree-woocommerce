@@ -70,6 +70,34 @@ class SyncState(models.Model):
         app_label = "inventree_woocommerce"
 
 
+class CustomerLink(models.Model):
+    """
+    One WooCommerce customer login <-> the InvenTree customer company it belongs to.
+
+    Made for account customers: every login whose email is the company's
+    email or one of its contacts' emails. Remembers what was last pushed to
+    the WooCommerce customer so changes (approval withdrawn, credit used up)
+    are sent once, and so a login can be switched off when it no longer
+    belongs to an approved account.
+    """
+
+    woo_customer_id = models.PositiveBigIntegerField(unique=True)
+    email = models.CharField(max_length=254, blank=True)
+    company_id = models.PositiveIntegerField(null=True, blank=True, db_index=True,
+                                             help_text="InvenTree Company id")
+    approved_pushed = models.BooleanField(default=False)
+    credit_pushed = models.CharField(max_length=32, blank=True, help_text="Available credit last sent ('' = no limit)")
+    company_name_pushed = models.CharField(max_length=100, blank=True)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        app_label = "inventree_woocommerce"
+        verbose_name = "WooCommerce account login"
+
+    def __str__(self):
+        return f"WooCommerce customer {self.woo_customer_id} ({self.email}) -> company {self.company_id}"
+
+
 class WooOrder(models.Model):
     """A WooCommerce order received by webhook, and the Sales Order made from it."""
 
@@ -85,6 +113,9 @@ class WooOrder(models.Model):
     state = models.CharField(max_length=10, choices=State.choices, default=State.RECEIVED)
     payload = models.JSONField(default=dict, help_text="Latest order body received from WooCommerce")
     sales_order_id = models.PositiveIntegerField(null=True, blank=True, help_text="InvenTree SalesOrder id")
+    on_account = models.BooleanField(default=False, help_text="Charged to the customer's account, not paid online")
+    held = models.BooleanField(default=False, help_text="Sales Order was put on hold for a person to check")
+    build_order_ids = models.JSONField(default=list, blank=True, help_text="InvenTree Build Orders created")
     warnings = models.TextField(blank=True, help_text="Created, but something needs a person to check")
     error = models.TextField(blank=True)
     attempts = models.PositiveSmallIntegerField(default=0)

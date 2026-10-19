@@ -44,6 +44,13 @@ class Config:
     issue_orders: bool = False
     write_back_notes: bool = True
 
+    account_parameter: str = "Shop Account"
+    credit_limit_parameter: str = "Credit Limit"
+    account_methods: list[str] = field(default_factory=lambda: ["inventree_account"])
+    sync_accounts: bool = True
+
+    build_orders: str = "shortfall"
+
     @property
     def woo_configured(self) -> bool:
         return bool(self.woo_url and self.consumer_key and self.consumer_secret)
@@ -102,4 +109,9 @@ def load_config(plugin=None) -> Config:
         shared_customer_id=_int_or_none(s("SHARED_CUSTOMER")),
         issue_orders=bool(s("ISSUE_ORDERS")),
         write_back_notes=bool(s("WRITE_BACK_NOTES")),
+        account_parameter=(s("ACCOUNT_PARAMETER") or "").strip(),
+        credit_limit_parameter=(s("CREDIT_LIMIT_PARAMETER") or "").strip(),
+        account_methods=[v.lower() for v in _split(s("ACCOUNT_PAYMENT_METHODS"))],
+        sync_accounts=bool(s("SYNC_ACCOUNTS")),
+        build_orders=s("BUILD_ORDERS") or "shortfall",
     )

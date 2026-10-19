@@ -104,5 +104,7 @@ def test_event_filter():
     assert wants("part_part.created")
     assert wants("common_parameter.saved")
     assert not wants("stock_stockitem.deleted")
-    assert not wants("company_company.saved")
+    assert wants("company_company.saved")  # account approval changes
+    assert wants("company_contact.created")
+    assert not wants("company_address.saved")
     assert not wants("inventree_woocommerce_productlink.saved")

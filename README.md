@@ -8,6 +8,10 @@ An [InvenTree](https://inventree.org) plugin that runs a WooCommerce shop from y
   *built to order* (backorders allowed, with a lead time shown).
 - **Turns paid orders into Sales Orders**: customer, contact, shipping address, line items, shipping and fees,
   with a note back on the WooCommerce order.
+- **Creates Build Orders** for build-to-order items that stock can't cover, linked to the Sales Order.
+- **Credit accounts**: customers you approve in InvenTree can "charge to my account" at checkout (with their PO
+  number), within a credit limit, using the companion WordPress plugin in `wordpress/inventree-shop/`.
+  Everyone else pays online through any WooCommerce gateway (Stripe, PayPal, ...).
 
 InvenTree stays the source of truth. WooCommerce does what it's good at: storefront, cart, checkout, payment,
 tax and shipping.
@@ -93,16 +97,88 @@ price and image on a part. This plugin has no dependency on how those get set.
 | Customers / Shared customer | One InvenTree customer per shop customer (matched by email), or one shared customer |
 | Issue Sales Orders automatically | Off = web orders arrive as **Pending** for you to check |
 | Note the Sales Order on the shop order | Adds a private note with the InvenTree reference |
+| Account parameter / Credit limit parameter | Company parameters that approve a credit account and cap it |
+| Account payment methods | WooCommerce payment method ids that mean "charge to account" |
+| Sync accounts to the shop | Keep approval and available credit up to date on shop logins |
+| Build Orders for build-to-order items | Shortfall only, full quantity, or off |
+
+## Payments: online and on account
+
+**Online payment** is plain WooCommerce: install and set up a gateway (WooCommerce Stripe Payments, PayPal, ...).
+Paid orders arrive with status *processing* and become Sales Orders. Unpaid ones (a bank transfer waiting in
+*on-hold*) wait until you mark them paid.
+
+**Charge to account** needs the companion WordPress plugin, `wordpress/inventree-shop/`:
+
+1. Zip the `inventree-shop` folder and upload it in *WordPress > Plugins > Add New > Upload*, then activate.
+   It works with both the classic and the block (Cart & Checkout blocks) checkout.
+2. *WooCommerce > Settings > Payments > Charge to account (InvenTree)*: enable it, choose whether to ask for
+   a purchase order number (optional / required / off), and the status orders get (Processing, or On hold
+   if you want to release each one yourself first).
+3. In InvenTree, on the customer company, add parameters:
+   - `Shop Account` = `Yes`
+   - `Credit Limit` = e.g. `5000` (shop currency; leave it off for no limit)
+4. Make sure each person who orders has a shop login whose email is the company's email or one of its
+   **contacts'** emails. The plugin finds their logins hourly (or right away with `POST /accounts/sync/`) and
+   stores on each login: approved yes/no, available credit, company name.
+
+At checkout, "Charge to my account" is offered only to logged-in, approved customers whose order fits their
+available credit. Available credit = credit limit − the value of the company's **open** Sales Orders.
+Invoices waiting for payment are in your accounting system, not InvenTree, so either allow for them in the
+limit or close Sales Orders only once they're paid.
+
+When an account order arrives, the plugin checks again with InvenTree's current data. If the company isn't
+approved (any more) or the order is over the limit, the Sales Order is still created but put **On Hold** with
+the reason, so nothing ships by mistake and nothing is lost. The customer's PO number becomes the Sales Order's
+customer reference. Account orders are filed under the account company even if the person typed a different
+company name at checkout.
+
+## Build Orders
+
+For each line of a new Sales Order, free stock = in stock − allocated to builds − demand from other open sales
+orders.
+
+- **Build-to-order** part (must be an assembly) short of stock: a Build Order for the shortfall (or the full
+  quantity, if you choose), linked to the Sales Order. Its target date comes from the part's `Lead Time`
+  parameter ("2 weeks", "10 working days", "3-4 weeks" - the longer end - or a number of days).
+- **Stock-only** part short of stock (two customers bought the last ones at once): a warning on the order.
+
+In-progress builds aren't counted, so an order is never left without a build. Cancel the new one if an existing
+build covers it. If InvenTree refuses a Build Order (e.g. you require validated or locked BOMs and this one
+isn't), the order is still created and the reason goes in its warnings.
+
+## Events for other plugins
+
+After a web order is committed the plugin fires InvenTree plugin events (needs *Enable event integration*):
+
+| Event | Arguments |
+|---|---|
+| `woocommerce.salesorder_created` | `id` (Sales Order), `woo_order_id`, `woo_order_number`, `on_account`, `held`, `build_ids` |
+| `woocommerce.build_created` | `id` (Build Order), `sales_order`, `part`, `quantity`, `woo_order_id` |
+
+Another plugin subscribes with `EventMixin`:
+
+```python
+def wants_process_event(self, event):
+    return event == "woocommerce.build_created"
+
+def process_event(self, event, *args, **kwargs):
+    build = Build.objects.get(pk=kwargs["id"])
+    ...  # e.g. pin the build to the released design revision
+```
 
 ## What happens to an order
 
 When a webhook arrives with a paid status, the plugin creates, in one transaction:
 
-- the **customer** (matched by email, or created) with a **contact**, and the **shipping address**
-- a **Sales Order** with customer reference `WC-<order number>`, a link to the WooCommerce order, and a note
-  with the payment method, transaction id, coupons, customer note and the tax charged
+- the **customer** with a **contact**, and the **shipping address**. The customer is found by: the company this
+  shop login ordered for before, a company with a contact using the billing email, a company with that email -
+  or created
+- a **Sales Order** with customer reference = the customer's PO number, or `WC-<order number>`; a link to the
+  WooCommerce order; a note with the payment method, transaction id, coupons, customer note and the tax charged
 - a **line item** per product, at the price actually paid (after discounts, ex tax)
 - **extra lines** for shipping and fees
+- **Build Orders** where needed (see above)
 
 A product that isn't linked to an InvenTree part still goes on the order, as an extra line flagged for you to
 fix. Every webhook delivery is stored, and an order is only ever turned into one Sales Order, whatever
@@ -118,6 +194,8 @@ WooCommerce retries. Failed orders are retried automatically (up to 5 times), or
 | `POST /plugin/woocommerce/sync/` | Staff | Sync now |
 | `POST /plugin/woocommerce/test-connection/` | Staff | Check the API key |
 | `POST /plugin/woocommerce/orders/<id>/retry/` | Staff | Retry a failed order |
+| `POST /plugin/woocommerce/accounts/sync/` | Staff | Refresh account approval/credit on shop logins now |
+| `GET /plugin/woocommerce/accounts/<company id>/` | Staff | An account's approval, limit, credit used and logins |
 
 Product links and received orders are also listed in InvenTree's Django admin, with "re-send" and "retry"
 actions.
@@ -128,10 +206,11 @@ actions.
 - The webhook rejects anything without a valid signature. It never trusts prices from anywhere but the
   signed order body.
 - Image links are HMAC-signed per part and image file, and only work while the part is in the shop.
+- Account approval and credit are only ever written by InvenTree (through the REST API key). The WordPress
+  plugin checks them again when the order is placed, and InvenTree checks a third time when it arrives.
 
 ## Roadmap
 
-- Build Orders for build-to-order lines, and events other plugins can listen to
 - Custom quote requests with file uploads (with a companion WordPress plugin)
 - Shipment and tracking pushed back to WooCommerce
 - A status panel inside InvenTree
@@ -145,6 +224,9 @@ pytest -q && ruff check .
 
 `tests/integration/check_inventree.py` is an end-to-end check to run inside a **throwaway** InvenTree
 database. See the docstring at the top of that file.
+
+`wordpress/tests/test-gateway.php` checks the account payment method inside a **throwaway** WordPress install
+(with a small WooCommerce stand-in): `php wordpress/tests/test-gateway.php /path/to/wordpress`.
 
 Releasing: bump `inventree_woocommerce/version.py`, then tag `vX.Y.Z`. CI publishes to PyPI.
 

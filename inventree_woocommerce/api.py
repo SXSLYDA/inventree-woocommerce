@@ -10,6 +10,8 @@ Staff only:
   POST sync/                          sync now: {"part_ids": [..]} or {} for the whole shop
   POST test-connection/               check the WooCommerce URL and API keys
   POST orders/<pk>/retry/             re-run a failed order
+  POST accounts/sync/                 refresh account approval/credit on shop logins now
+  GET  accounts/<company>/            an account's approval, limit and available credit
 """
 
 from django.urls import path, re_path
@@ -43,7 +45,7 @@ class StatusView(APIView):
 
     def get(self, request):
         from .config import load_config
-        from .models import ProductLink, SyncState, WooOrder
+        from .models import CustomerLink, ProductLink, SyncState, WooOrder
 
         config = load_config()
         state = SyncState.objects.filter(pk=1).first()
@@ -64,14 +66,18 @@ class StatusView(APIView):
                 "published": ProductLink.objects.filter(published=True).count(),
                 "with_errors": ProductLink.objects.exclude(last_error="").count(),
             },
+            "accounts": {
+                "logins_linked": CustomerLink.objects.count(),
+                "logins_approved": CustomerLink.objects.filter(approved_pushed=True).count(),
+            },
             "last_sync": state.last_run_at if state else None,
             "last_full_sync": state.last_full_run_at if state else None,
             "last_summary": state.last_summary if state else {},
             "product_errors": list(ProductLink.objects.exclude(last_error="")
                                    .values("part_id", "woo_product_id", "last_error")[:50]),
             "orders": list(WooOrder.objects.values(
-                "pk", "woo_order_number", "woo_status", "state", "sales_order_id", "warnings", "error",
-                "received_at")[:25]),
+                "pk", "woo_order_number", "woo_status", "state", "sales_order_id", "on_account", "held",
+                "build_order_ids", "warnings", "error", "received_at")[:25]),
         })
 
 
@@ -131,6 +137,38 @@ class RetryOrderView(APIView):
         return Response({"detail": "Queued."}, status=202)
 
 
+class AccountSyncView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request):
+        from InvenTree.tasks import offload_task
+
+        offload_task("inventree_woocommerce.tasks.sync_accounts", group="plugin", check_duplicates=True)
+        return Response({"detail": "Account sync queued."}, status=202)
+
+
+class AccountView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request, company_id):
+        from .accounts import account_status, credit_used, format_credit
+        from .config import load_config
+        from .models import CustomerLink
+
+        config = load_config()
+        approved, limit, available = account_status(config, company_id)
+        return Response({
+            "company": company_id,
+            "approved": approved,
+            "currency": config.currency,
+            "credit_limit": format_credit(limit) or None,
+            "credit_used": format_credit(credit_used(company_id, config.currency)),
+            "credit_available": format_credit(available) or None,
+            "logins": list(CustomerLink.objects.filter(company_id=company_id)
+                           .values("woo_customer_id", "email", "approved_pushed", "credit_pushed")),
+        })
+
+
 urlpatterns = [
     path("webhook/order/", _public(webhook), name="webhook-order"),
     re_path(r"^image/(?P<part_id>\d+)/(?P<signature>[0-9a-f]{40})(?P<ext>\.[a-z0-9]{2,5})$",
@@ -139,4 +177,6 @@ urlpatterns = [
     path("sync/", SyncView.as_view(), name="sync"),
     path("test-connection/", TestConnectionView.as_view(), name="test-connection"),
     path("orders/<int:pk>/retry/", RetryOrderView.as_view(), name="order-retry"),
+    path("accounts/sync/", AccountSyncView.as_view(), name="accounts-sync"),
+    path("accounts/<int:company_id>/", AccountView.as_view(), name="account"),
 ]
