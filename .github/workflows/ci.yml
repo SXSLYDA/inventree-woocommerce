@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install "django>=5.2,<6" djangorestframework requests pytest ruff
+      - run: ruff check .
+      - run: pytest -q
+      - name: Migrations match the models
+        run: |
+          cat > /tmp/settings.py <<'EOF'
+          SECRET_KEY = "ci"
+          INSTALLED_APPS = ["django.contrib.contenttypes", "django.contrib.auth", "inventree_woocommerce"]
+          DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}
+          DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
+          USE_TZ = True
+          EOF
+          PYTHONPATH=.:/tmp DJANGO_SETTINGS_MODULE=settings django-admin makemigrations inventree_woocommerce --check --dry-run
+
+  publish:
+    # Push a tag like v0.1.0 to publish. Set up PyPI "trusted publishing" for this repo first
+    # (pypi.org > your project > Publishing > add GitHub, workflow ci.yml, environment pypi).
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build && python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1

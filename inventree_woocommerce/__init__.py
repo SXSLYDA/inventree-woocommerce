@@ -1,0 +1,1 @@
+"""InvenTree <-> WooCommerce integration plugin."""

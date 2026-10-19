@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inventree-woocommerce"
+dynamic = ["version"]
+description = "InvenTree plugin: publish salable parts to a WooCommerce shop, keep stock and prices in sync, and turn paid shop orders into InvenTree Sales Orders."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Tyler Brannigan / OMG Harness" }]
+requires-python = ">=3.10"
+keywords = ["inventree", "inventree-plugin", "woocommerce", "wordpress", "ecommerce", "inventory"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Framework :: Django",
+    "Framework :: InvenTree",
+    "Topic :: Office/Business",
+]
+dependencies = [
+    "requests",
+]
+
+[project.urls]
+Homepage = "https://github.com/SXSLYDA/inventree-woocommerce"
+Issues = "https://github.com/SXSLYDA/inventree-woocommerce/issues"
+
+[project.entry-points.inventree_plugins]
+WooCommercePlugin = "inventree_woocommerce.core:WooCommercePlugin"
+
+[tool.setuptools.dynamic]
+version = { attr = "inventree_woocommerce.version.PLUGIN_VERSION" }
+
+[tool.setuptools.packages.find]
+include = ["inventree_woocommerce*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/integration/*" = ["E402", "E741"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["tests/integration"]
