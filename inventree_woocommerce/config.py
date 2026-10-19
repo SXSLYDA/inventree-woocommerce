@@ -28,6 +28,8 @@ class Config:
     shop_category_id: int | None = None
     category_default_mode: str = "stock"
     lead_time_parameter: str = "Lead Time"
+    default_lead_time: str = "6 weeks"
+    build_note: str = ""
     published_parameters: list[str] = field(default_factory=list)
     title_source: str = "name_description"
     sku_source: str = "ipn_or_name"
@@ -50,6 +52,16 @@ class Config:
     credit_limit_parameter: str = "Credit Limit"
     account_methods: list[str] = field(default_factory=lambda: ["inventree_account"])
     sync_accounts: bool = True
+
+    push_shipments: bool = True
+
+    shop_secret: str = ""
+    quote_valid_days: int = 30
+    quote_remind_days: int = 3
+    quote_max_file_mb: int = 20
+    quote_max_files: int = 20
+    quote_file_types: list[str] = field(default_factory=lambda: [
+        "pdf", "png", "jpg", "jpeg", "gif", "webp", "heic", "dxf", "dwg", "xlsx", "xls", "csv", "docx", "doc", "txt"])
 
     build_orders: str = "shortfall"
     build_requires_valid_bom: bool = True
@@ -99,6 +111,8 @@ def load_config(plugin=None) -> Config:
         shop_category_id=_int_or_none(s("SHOP_CATEGORY")),
         category_default_mode=s("CATEGORY_DEFAULT_MODE") or "stock",
         lead_time_parameter=(s("LEAD_TIME_PARAMETER") or "").strip(),
+        default_lead_time=(s("DEFAULT_LEAD_TIME") or "").strip(),
+        build_note=(s("BUILD_NOTE") or "").strip(),
         published_parameters=_split(s("PUBLISHED_PARAMETERS")),
         title_source=s("TITLE_SOURCE") or "name_description",
         sku_source=s("SKU_SOURCE") or "ipn_or_name",
@@ -119,6 +133,13 @@ def load_config(plugin=None) -> Config:
         credit_limit_parameter=(s("CREDIT_LIMIT_PARAMETER") or "").strip(),
         account_methods=[v.lower() for v in _split(s("ACCOUNT_PAYMENT_METHODS"))],
         sync_accounts=bool(s("SYNC_ACCOUNTS")),
+        push_shipments=bool(s("PUSH_SHIPMENTS")),
+        shop_secret=(s("SHOP_SECRET") or "").strip(),
+        quote_valid_days=max(int(s("QUOTE_VALID_DAYS") or 30), 1),
+        quote_remind_days=max(int(s("QUOTE_REMIND_DAYS") or 0), 0),
+        quote_max_file_mb=max(int(s("QUOTE_MAX_FILE_MB") or 20), 1),
+        quote_max_files=max(int(s("QUOTE_MAX_FILES") or 20), 1),
+        quote_file_types=[t.lower().lstrip(".") for t in _split(s("QUOTE_FILE_TYPES"))] or Config().quote_file_types,
         build_orders=s("BUILD_ORDERS") or "shortfall",
         build_requires_valid_bom=bool(s("BUILD_REQUIRES_VALID_BOM")),
         build_requires_locked=bool(s("BUILD_REQUIRES_LOCKED")),

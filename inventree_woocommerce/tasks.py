@@ -71,3 +71,11 @@ def sync_account_links():
     config = load_config()
     if config.sync_accounts:
         run(config, lookup_new=False)
+
+
+def expire_quotes():
+    """Daily: remind customers before quotes expire, and expire them afterwards."""
+    from .config import load_config
+    from .quotes import expire_quotes as run
+
+    run(load_config())

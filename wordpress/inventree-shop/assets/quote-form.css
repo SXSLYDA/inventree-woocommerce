@@ -1,0 +1,19 @@
+.inventree-quote-item {
+	position: relative;
+	border: 1px solid #d8d8d8;
+	border-radius: 6px;
+	padding: 12px 16px 4px;
+	margin: 0 0 16px;
+}
+.inventree-quote-item legend { font-weight: 600; padding: 0 6px; }
+.inventree-remove-item {
+	position: absolute; top: 6px; right: 8px;
+	background: none; border: 0; font-size: 22px; line-height: 1; cursor: pointer; color: #888;
+}
+.inventree-remove-item:hover { color: #b00; }
+.inventree-provide label { display: block; margin: 4px 0; }
+.inventree-provide input[type=file], .inventree-provide .inventree-call-time { margin: 2px 0 8px 24px; max-width: calc(100% - 24px); }
+.inventree-provide-help, .inventree-quote-limits, .inventree-muted { color: #666; font-size: 0.9em; }
+.inventree-quote-details { border: 0; padding: 0; margin: 8px 0 0; }
+.inventree-quote-details legend { font-weight: 600; margin-bottom: 4px; }
+mark.inventree-ready { background: #e6f4ea; color: #1e6b34; padding: 1px 6px; border-radius: 4px; }

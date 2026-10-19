@@ -17,7 +17,7 @@ Mixins:
 - ScheduleMixin: full reconcile every 15 minutes, flush of anything left
                  queued, account sync, and retry of failed orders.
                  Needs "Enable schedule integration" in InvenTree's plugin settings.
-- UserInterfaceMixin: "Web Shop" dashboard widget (staff), "Web Shop" panel
+- UserInterfaceMixin: "Web Shop" and "Quote Requests" dashboard widgets (staff), "Web Shop" panel
                  on salable parts, "Web Order" panel on Sales Orders that
                  came from the shop. One plain JS file, static/shop_panels.js,
                  using the React and Mantine that InvenTree's UI provides -
@@ -110,6 +110,18 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
             "name": "Lead time parameter",
             "description": "Part parameter shown as the lead time on build-to-order products.",
             "default": "Lead Time",
+        },
+        "DEFAULT_LEAD_TIME": {
+            "name": "Default lead time",
+            "description": "Lead time for build-to-order parts without their own lead time parameter, e.g. "
+                           "'6 weeks'. Shown on the product and used for the Build Order target date.",
+            "default": "6 weeks",
+        },
+        "BUILD_NOTE": {
+            "name": "Build-to-order note",
+            "description": "Shown on every build-to-order product, e.g. 'Call 08 1234 5678 to discuss your "
+                           "requirements.' Blank = none.",
+            "default": "",
         },
         "PUBLISHED_PARAMETERS": {
             "name": "Parameters shown in the shop",
@@ -215,6 +227,13 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
             "validator": bool,
             "default": True,
         },
+        "PUSH_SHIPMENTS": {
+            "name": "Tell the customer about shipments",
+            "description": "When a web order's shipment is completed in InvenTree, email the customer (dispatched, "
+                           "delivered on, tracking) and complete the WooCommerce order once everything has shipped.",
+            "validator": bool,
+            "default": True,
+        },
         # --- Credit accounts ---
         "ACCOUNT_PARAMETER": {
             "name": "Account parameter",
@@ -255,6 +274,42 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
             "validator": bool,
             "default": False,
         },
+        # --- Quote requests ---
+        "SHOP_SECRET": {
+            "name": "Shop link secret",
+            "description": "Long random value shared with the companion WordPress plugin (InvenTree Shop settings). "
+                           "Signs quote requests and the notifications InvenTree sends back to the shop.",
+            "default": "",
+            "protected": True,
+        },
+        "QUOTE_VALID_DAYS": {
+            "name": "Quotes valid for (days)",
+            "description": "How long a sent quote can be accepted.",
+            "validator": int,
+            "default": 30,
+        },
+        "QUOTE_REMIND_DAYS": {
+            "name": "Expiry reminder (days before)",
+            "description": "Email the customer this many days before a quote expires. 0 = no reminder.",
+            "validator": int,
+            "default": 3,
+        },
+        "QUOTE_MAX_FILE_MB": {
+            "name": "Largest quote upload (MB)",
+            "description": "Per file. Make sure your web server allows uploads this big (nginx client_max_body_size).",
+            "validator": int,
+            "default": 20,
+        },
+        "QUOTE_MAX_FILES": {
+            "name": "Most files per quote request",
+            "validator": int,
+            "default": 20,
+        },
+        "QUOTE_FILE_TYPES": {
+            "name": "Quote upload file types",
+            "description": "Comma-separated file extensions customers may upload.",
+            "default": "pdf,png,jpg,jpeg,gif,webp,heic,dxf,dwg,xlsx,xls,csv,docx,doc,txt",
+        },
         # --- Build Orders ---
         "BUILD_ORDERS": {
             "name": "Build Orders for build-to-order items",
@@ -281,6 +336,10 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
             "func": "inventree_woocommerce.tasks.sync_accounts",
             "schedule": "H",
         },
+        "expire_quotes": {
+            "func": "inventree_woocommerce.tasks.expire_quotes",
+            "schedule": "D",
+        },
         "retry_orders": {
             "func": "inventree_woocommerce.tasks.retry_failed_orders",
             "schedule": "I",
@@ -302,6 +361,13 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
             "description": "WooCommerce sync status, problems, parts awaiting release and recent web orders.",
             "icon": "ti:shopping-cart:outline",
             "source": self._panel_source("renderShopDashboard"),
+            "options": {"width": 6, "height": 6},
+        }, {
+            "key": "woocommerce-quotes",
+            "title": "Quote Requests",
+            "description": "Customer quote requests from the shop: samples, calls, pricing and sending quotes.",
+            "icon": "ti:file-dollar:outline",
+            "source": self._panel_source("renderQuoteDashboard"),
             "options": {"width": 6, "height": 6},
         }]
 
@@ -347,12 +413,16 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
     # --- EventMixin ---
 
     def wants_process_event(self, event):
-        from .events import wants
+        from . import events, shipments
 
-        return wants(event)
+        return events.wants(event) or shipments.wants(event)
 
     def process_event(self, event, *args, **kwargs):
+        from . import events, shipments
         from .config import load_config
-        from .events import handle_event
 
-        handle_event(event, kwargs.get("id"), load_config(self))
+        config = load_config(self)
+        if shipments.wants(event):
+            shipments.handle_event(event, kwargs.get("id"), config)
+        if events.wants(event):
+            events.handle_event(event, kwargs.get("id"), config)

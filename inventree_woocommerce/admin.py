@@ -8,7 +8,17 @@ re-import with some models already registered raises AlreadyRegistered.
 
 from django.contrib import admin
 
-from .models import CustomerLink, PendingSync, ProductLink, SyncState, WooOrder
+from .models import (
+    CustomerLink,
+    PendingSync,
+    ProductLink,
+    QuoteFile,
+    QuoteItem,
+    QuoteLine,
+    QuoteRequest,
+    SyncState,
+    WooOrder,
+)
 
 
 @admin.register(PendingSync)
@@ -69,3 +79,36 @@ class WooOrderAdmin(admin.ModelAdmin):
         for pk in pks:
             offload_task(TASK_PATH, pk, group="plugin", check_duplicates=True)
         self.message_user(request, f"Queued {len(pks)} order(s).")
+
+
+class QuoteItemInline(admin.TabularInline):
+    model = QuoteItem
+    extra = 0
+
+
+class QuoteLineInline(admin.TabularInline):
+    model = QuoteLine
+    extra = 0
+
+
+@admin.register(QuoteRequest)
+class QuoteRequestAdmin(admin.ModelAdmin):
+    list_display = ("reference", "status", "name", "company_name", "created_at", "valid_until", "sales_order_id")
+    list_filter = ("status",)
+    search_fields = ("reference", "name", "email", "company_name")
+    inlines = [QuoteItemInline, QuoteLineInline]
+
+
+@admin.register(QuoteItem)
+class QuoteItemAdmin(admin.ModelAdmin):
+    list_display = ("request", "position", "kind", "quantity", "state")
+
+
+@admin.register(QuoteLine)
+class QuoteLineAdmin(admin.ModelAdmin):
+    list_display = ("request", "position", "part_id", "quantity", "unit_price", "accepted")
+
+
+@admin.register(QuoteFile)
+class QuoteFileAdmin(admin.ModelAdmin):
+    list_display = ("request", "item", "original_name", "size", "uploaded_at")

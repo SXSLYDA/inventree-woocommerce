@@ -122,8 +122,11 @@ def build_product(snap, mode, config):
     if snap.revision:
         short.append(f"<p>Revision {html.escape(snap.revision)}</p>")
     if mode == BUILD:
-        lead = f" Lead time: {html.escape(snap.lead_time)}." if snap.lead_time else ""
+        lead_time = snap.lead_time or config.default_lead_time
+        lead = f" Lead time: {html.escape(lead_time)}." if lead_time else ""
         short.append(f"<p>Built to order.{lead}</p>")
+        if config.build_note:
+            short.append(f'<p class="inventree-build-note">{html.escape(config.build_note)}</p>')
 
     long_html = ""
     if snap.parameters:
@@ -146,7 +149,9 @@ def build_product(snap, mode, config):
             {"key": "_inventree_part_id", "value": str(snap.part_id)},
             {"key": "_inventree_mode", "value": mode},
             {"key": "_inventree_revision", "value": snap.revision},
+            {"key": "_inventree_quote_only", "value": "0"},
         ],
+        "catalog_visibility": "visible",
     }
     if snap.price is not None and snap.price > 0:
         details["regular_price"] = format_price(snap.price)

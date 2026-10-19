@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       InvenTree Shop
  * Plugin URI:        https://github.com/SXSLYDA/inventree-woocommerce
- * Description:       Companion to the inventree-woocommerce InvenTree plugin. Adds a "Charge to my account" payment method for customers InvenTree has approved for credit, with an optional purchase order number.
- * Version:           0.2.0
+ * Description:       Companion to the inventree-woocommerce InvenTree plugin. Quote requests with drawings, samples or a call (itemised, accepted online), and a "Charge to my account" payment method for customers InvenTree has approved for credit.
+ * Version:           0.3.0
  * Requires at least: 6.4
  * Requires PHP:      7.4
  * Requires Plugins:  woocommerce
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'INVENTREE_SHOP_VERSION', '0.2.0' );
+define( 'INVENTREE_SHOP_VERSION', '0.3.0' );
 define( 'INVENTREE_SHOP_FILE', __FILE__ );
 
 // User meta written by the InvenTree plugin through the WooCommerce REST API.
@@ -25,6 +25,40 @@ define( 'INVENTREE_META_CREDIT', 'inventree_credit_available' );
 define( 'INVENTREE_META_COMPANY', 'inventree_account_company' );
 // Order meta read by the InvenTree plugin (no leading underscore, so it is included in webhooks).
 define( 'INVENTREE_META_PO', 'inventree_po_number' );
+
+require_once __DIR__ . '/includes/class-inventree-link.php';
+require_once __DIR__ . '/includes/class-inventree-settings.php';
+
+add_action(
+	'plugins_loaded',
+	function () {
+		if ( ! class_exists( 'WooCommerce' ) ) {
+			return;
+		}
+		require_once __DIR__ . '/includes/class-inventree-quotes.php';
+		require_once __DIR__ . '/includes/class-inventree-notify.php';
+		InvenTree_Shop_Settings::init();
+		InvenTree_Shop_Quotes::init();
+		InvenTree_Shop_Notify::init();
+	},
+	20
+);
+
+register_activation_hook(
+	__FILE__,
+	function () {
+		add_rewrite_endpoint( 'quotes', EP_ROOT | EP_PAGES );
+		flush_rewrite_rules();
+	}
+);
+
+register_deactivation_hook(
+	__FILE__,
+	function () {
+		wp_clear_scheduled_hook( 'inventree_shop_retry_quotes' );
+		flush_rewrite_rules();
+	}
+);
 
 // Works with WooCommerce's High-Performance Order Storage and the block checkout.
 add_action(

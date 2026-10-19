@@ -15,6 +15,17 @@ Staff only:
   GET  accounts/<company>/            an account's approval, limit and available credit
   POST part/<part>/                   re-send one part's listing now
 
+From the WordPress plugin (signed with the shop link secret):
+  POST quotes/submit/                 new quote request (multipart: payload + files)
+  POST quotes/customer/               a customer's quotes, for My Account
+  POST quotes/accept/                 accept lines -> pending order + payment link
+
+Staff (Quote Requests dashboard widget):
+  GET  quotes/?status=open|all|<status>   list
+  GET  quotes/<id>/                   detail
+  POST quotes/<id>/                   action (sample_received, called, cannot, set_lines, send, decline, ...)
+  GET  quotes/<id>/files/<file>/      download a customer file
+
 Signed-in users (the InvenTree panels):
   GET  part/<part>/                   is the part in the shop, and if not, why not
   GET  salesorder/<so>/               web order details for a Sales Order
@@ -285,6 +296,158 @@ class SalesOrderShopView(APIView):
         })
 
 
+# --- quote requests: from the WordPress plugin (signed with the shop link secret) ---
+
+def _json(status, body):
+    from django.http import JsonResponse
+
+    return JsonResponse(body, status=status, json_dumps_params={"default": str})
+
+
+def quote_submit(request):
+    from .config import load_config
+    from .quotes import submit
+
+    if request.method != "POST":
+        return _json(405, {"detail": "POST only"})
+    config = load_config()
+    if not config.shop_secret:
+        return _json(503, {"detail": "Shop link secret not set in the InvenTree plugin settings."})
+    status, body = submit(request, config)
+    return _json(status, body)
+
+
+def _signed_json(request):
+    """(config, data) for a signed JSON call from WordPress, or (None, error response)."""
+    import json
+
+    from .config import load_config
+    from .shop_link import verify_request
+
+    if request.method != "POST":
+        return None, _json(405, {"detail": "POST only"})
+    config = load_config()
+    if not config.shop_secret:
+        return None, _json(503, {"detail": "Shop link secret not set in the InvenTree plugin settings."})
+    if not verify_request(request, config.shop_secret):
+        return None, _json(401, {"detail": "Invalid signature."})
+    try:
+        return config, json.loads(request.body.decode("utf-8"))
+    except ValueError:
+        return None, _json(400, {"detail": "Invalid JSON."})
+
+
+def quote_customer_list(request):
+    from .quotes import _int, customer_quotes
+
+    config, data = _signed_json(request)
+    if config is None:
+        return data
+    customer_id = _int(data.get("customer_id"))
+    if customer_id <= 0:
+        return _json(400, {"detail": "customer_id required"})
+    return _json(200, {"quotes": customer_quotes(customer_id)})
+
+
+def quote_accept(request):
+    from .quotes import QuoteError, _int, accept
+    from .woo_client import WooError
+
+    config, data = _signed_json(request)
+    if config is None:
+        return data
+    try:
+        url = accept(_int(data.get("customer_id")), data.get("reference", ""), data.get("line_ids") or [], config)
+    except QuoteError as exc:
+        return _json(400, {"detail": str(exc)})
+    except WooError as exc:
+        return _json(502, {"detail": f"The shop couldn't create the order: {exc}"})
+    return _json(200, {"payment_url": url})
+
+
+# --- quote requests: staff, from the InvenTree panel ---
+
+class QuoteListView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        from .models import QuoteRequest
+
+        which = request.query_params.get("status", "open")
+        qs = QuoteRequest.objects.all()
+        if which == "open":
+            qs = qs.filter(status__in=[*QuoteRequest.OPEN, QuoteRequest.Status.QUOTED])
+        elif which != "all":
+            qs = qs.filter(status=which)
+        rows = []
+        for q in qs.prefetch_related("items")[:200]:
+            items = list(q.items.all())
+            rows.append({
+                "id": q.pk, "reference": q.reference, "status": q.status, "status_label": q.get_status_display(),
+                "name": q.name, "company_name": q.company_name, "created_at": q.created_at,
+                "required_by": q.required_by, "valid_until": q.valid_until, "items": len(items),
+                "samples_due": sum(1 for i in items if i.sending_sample and not i.sample_received_at),
+                "calls_due": sum(1 for i in items if i.wants_call and not i.called_at),
+                "sales_order_id": q.sales_order_id,
+            })
+        counts = {s: QuoteRequest.objects.filter(status=s).count() for s, _ in QuoteRequest.Status.choices}
+        return Response({"quotes": rows, "counts": counts})
+
+
+class QuoteDetailView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def _quote(self, pk):
+        from .models import QuoteRequest
+
+        return QuoteRequest.objects.filter(pk=pk).first()
+
+    def get(self, request, pk):
+        from .quotes import serialize
+
+        quote = self._quote(pk)
+        if quote is None:
+            return Response({"detail": "Not found."}, status=404)
+        return Response(serialize(quote, staff=True))
+
+    def post(self, request, pk):
+        from .config import load_config
+        from .quotes import QuoteError, apply_action, serialize
+        from .woo_client import WooError
+
+        quote = self._quote(pk)
+        if quote is None:
+            return Response({"detail": "Not found."}, status=404)
+        try:
+            message = apply_action(quote, request.data, load_config())
+        except QuoteError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        except WooError as exc:
+            return Response({"detail": f"WooCommerce: {exc}"}, status=502)
+        quote.refresh_from_db()
+        return Response({"detail": message, "quote": serialize(quote, staff=True)})
+
+
+class QuoteFileView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request, pk, file_id):
+        import os
+
+        from django.http import FileResponse
+
+        from .models import QuoteFile
+
+        f = QuoteFile.objects.filter(pk=file_id, request_id=pk).first()
+        if f is None:
+            return Response({"detail": "Not found."}, status=404)
+        response = FileResponse(f.file.open("rb"), as_attachment=True,
+                                filename=os.path.basename(f.original_name) or "file",
+                                content_type="application/octet-stream")
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+
 urlpatterns = [
     path("webhook/order/", _public(webhook), name="webhook-order"),
     re_path(r"^image/(?P<part_id>\d+)/(?P<signature>[0-9a-f]{40})(?P<ext>\.[a-z0-9]{2,5})$",
@@ -297,6 +460,12 @@ urlpatterns = [
     path("orders/<int:pk>/retry/", RetryOrderView.as_view(), name="order-retry"),
     path("accounts/sync/", AccountSyncView.as_view(), name="accounts-sync"),
     path("part/<int:part_id>/", PartShopView.as_view(), name="part-shop"),
+    path("quotes/submit/", _public(quote_submit), name="quote-submit"),
+    path("quotes/customer/", _public(quote_customer_list), name="quote-customer"),
+    path("quotes/accept/", _public(quote_accept), name="quote-accept"),
+    path("quotes/", QuoteListView.as_view(), name="quote-list"),
+    path("quotes/<int:pk>/", QuoteDetailView.as_view(), name="quote-detail"),
+    path("quotes/<int:pk>/files/<int:file_id>/", QuoteFileView.as_view(), name="quote-file"),
     path("salesorder/<int:so_id>/", SalesOrderShopView.as_view(), name="salesorder-shop"),
     path("accounts/<int:company_id>/", AccountView.as_view(), name="account"),
 ]

@@ -145,3 +145,14 @@ def test_documents_listed_and_escaped():
     with_docs = payload_hash(details)
     without, _ = build_product(snap(), STOCK, Config())
     assert payload_hash(without) != with_docs  # adding a document re-sends the listing
+
+
+def test_default_lead_time_and_build_note():
+    c = Config(default_lead_time="6 weeks", build_note="Call 08 1234 5678 to discuss.")
+    d, _ = build_product(snap(), BUILD, c)
+    assert "Lead time: 6 weeks." in d["short_description"]
+    assert "Call 08 1234 5678 to discuss." in d["short_description"]
+    own, _ = build_product(snap(lead_time="2 weeks"), BUILD, c)
+    assert "Lead time: 2 weeks." in own["short_description"] and "6 weeks" not in own["short_description"]
+    stock, _ = build_product(snap(), STOCK, c)
+    assert "Lead time" not in stock["short_description"] and "Call 08" not in stock["short_description"]

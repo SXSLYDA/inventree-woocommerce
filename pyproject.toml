@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "inventree-woocommerce"
 dynamic = ["version"]
-description = "InvenTree plugin: publish salable parts to a WooCommerce shop, keep stock and prices in sync, and turn paid shop orders into InvenTree Sales Orders."
+description = "InvenTree plugin: run a WooCommerce shop from InvenTree - catalogue, stock, orders, Build Orders, credit accounts, quote requests and shipment updates."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Tyler Brannigan / OMG Harness" }]

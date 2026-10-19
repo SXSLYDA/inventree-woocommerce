@@ -18,11 +18,19 @@ g.HTMLElement = dom.window.HTMLElement;
 g.Element = dom.window.Element;
 g.Node = dom.window.Node;
 g.getComputedStyle = dom.window.getComputedStyle;
-g.requestAnimationFrame = (cb) => setTimeout(cb, 0);
-g.cancelAnimationFrame = (id) => clearTimeout(id);
+g.requestAnimationFrame = dom.window.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+g.cancelAnimationFrame = dom.window.cancelAnimationFrame = (id) => clearTimeout(id);
 g.IS_REACT_ACT_ENVIRONMENT = true;
 dom.window.matchMedia = dom.window.matchMedia || (() => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} }));
 g.ResizeObserver = dom.window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+for (const name of ['MutationObserver', 'Event', 'MouseEvent', 'KeyboardEvent', 'HTMLInputElement', 'DocumentFragment', 'DOMRect']) {
+  if (dom.window[name] && !g[name]) g[name] = dom.window[name];
+}
+dom.window.HTMLElement.prototype.scrollIntoView = function () {};
+if (!dom.window.document.fonts) {
+  dom.window.document.fonts = { addEventListener() {}, removeEventListener() {}, ready: Promise.resolve(), status: 'loaded' };
+}
+dom.window.Element.prototype.getAnimations = dom.window.Element.prototype.getAnimations || (() => []);
 
 const React = require('react');
 const ReactDOMClient = require('react-dom/client');
@@ -60,14 +68,55 @@ const fixtures = {
   },
 };
 
+const quoteDetail = {
+  id: 1, reference: 'QR-261019-TEST', status: 'waiting_sample', status_label: 'Waiting for sample', name: 'Bob',
+  company_name: 'Acme', email: 'buyer@acme.example', phone: '0400 000 000', created_at: '2026-10-19T08:00:00Z',
+  required_by: '2026-12-01', delivery_postcode: '6430', notes: 'Two machines', currency: 'AUD', valid_until: null,
+  decline_reason: '', staff_notes: '', sales_order_id: null, total: '0.00',
+  items: [
+    { id: 11, position: 1, kind: 'custom', kind_label: 'Custom harness', description: 'Engine loom like the sample', oem_part_number: '',
+      machine: 'CAT R1300G', quantity: 2, reference_sku: '', sending_sample: true, sample_received: false, wants_call: false,
+      call_time: '', called: false, state: 'open', cannot_reason: '', call_notes: '' },
+    { id: 12, position: 2, kind: 'copy', kind_label: 'Copy of an existing harness', description: 'Dash harness', oem_part_number: '123-4567',
+      machine: '', quantity: 1, reference_sku: '', sending_sample: false, sample_received: false, wants_call: true,
+      call_time: 'Mornings', called: false, state: 'open', cannot_reason: '', call_notes: '' },
+  ],
+  files: [{ id: 5, item_id: 12, name: 'layout.pdf', size: 24, url: '/plugin/woocommerce/quotes/1/files/5/' }],
+  lines: [],
+};
+fixtures['/plugin/woocommerce/quotes/?status=open'] = {
+  quotes: [{ id: 1, reference: 'QR-261019-TEST', status: 'waiting_sample', status_label: 'Waiting for sample', name: 'Bob',
+             company_name: 'Acme', created_at: '2026-10-19T08:00:00Z', required_by: '2026-12-01', valid_until: null,
+             items: 2, samples_due: 1, calls_due: 1, sales_order_id: null }],
+  counts: {},
+};
+fixtures['/plugin/woocommerce/quotes/1/'] = quoteDetail;
+fixtures['/api/part/'] = { count: 1, results: [{ pk: 42, name: 'OMG-CUSTOM-1', full_name: 'OMG-CUSTOM-1', description: 'Custom loom' }] };
+
 const posted = [];
+const postedBodies = [];
+const partSearches = [];
 const navigated = [];
 function makeContext(id) {
   return {
     id,
     api: {
-      get: async (url) => { if (!(url in fixtures)) throw new Error('unexpected GET ' + url); return { data: fixtures[url] }; },
-      post: async (url) => { posted.push(url); return { data: { detail: 'Queued.', summary: {} } }; },
+      get: async (url, config) => {
+        if (!(url in fixtures)) throw new Error('unexpected GET ' + url);
+        if (url === '/api/part/') partSearches.push(config?.params);
+        return { data: fixtures[url] };
+      },
+      post: async (url, body) => {
+        posted.push(url);
+        postedBodies.push(body);
+        if (url === '/plugin/woocommerce/quotes/1/') {
+          const q = JSON.parse(JSON.stringify(quoteDetail));
+          if (body.action === 'sample_received') { q.items[0].sample_received = true; q.status = 'call'; q.status_label = 'Call to discuss'; }
+          if (body.action === 'set_lines') { q.lines = body.lines.map((l, n) => ({ ...l, id: n + 1, part_name: 'OMG-CUSTOM-1', total: '0', accepted: false })); }
+          return { data: { detail: 'Done.', quote: q } };
+        }
+        return { data: { detail: 'Queued.', summary: {} } };
+      },
     },
     navigate: (to) => navigated.push(to),
     user: { isStaff: () => true },
@@ -125,6 +174,52 @@ check('dashboard: recent orders link to the Sales Order', dt.includes('SO-0007')
 const syncBtn = [...dash.container.querySelectorAll('button')].find((b) => b.textContent === 'Sync whole shop');
 await act(async () => { syncBtn.click(); await new Promise((r) => setTimeout(r, 20)); });
 check('dashboard: Sync whole shop POSTs', posted.includes('/plugin/woocommerce/sync/'));
+
+// quote requests widget
+dom.window.HTMLElement.prototype.scrollIntoView = function () {};
+const quotes = await render('quotes', panels.renderQuoteDashboard(makeContext(undefined)));
+const qt = quotes.container.textContent;
+check('quotes: list shows the request with samples and calls due', qt.includes('QR-261019-TEST') && qt.includes('1 sample') && qt.includes('1 call'));
+const row = [...quotes.container.querySelectorAll('tr')].find((tr) => tr.textContent.includes('QR-261019-TEST'));
+await act(async () => { row.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); await new Promise((r) => setTimeout(r, 50)); });
+const page = () => document.body.textContent;
+check('quotes: clicking opens the request', page().includes('Engine loom like the sample') && page().includes('Items requested'));
+check('quotes: item files and call details shown', page().includes('layout.pdf') && page().includes('Best time: Mornings'));
+const sampleBtn = [...document.body.querySelectorAll('button')].find((b) => b.textContent === 'Mark sample received');
+await act(async () => { sampleBtn.click(); await new Promise((r) => setTimeout(r, 50)); });
+check('quotes: mark sample received posts the action', postedBodies.some((b) => b && b.action === 'sample_received' && b.item_id === 11));
+check('quotes: view updates from the response', page().includes('Sample received') && page().includes('Call to discuss'));
+const addBtn = [...document.body.querySelectorAll('button')].find((b) => b.textContent === 'Add line');
+await act(async () => { addBtn.click(); await new Promise((r) => setTimeout(r, 20)); });
+const priceInput = [...document.body.querySelectorAll('input')].find((i) => i.placeholder === 'Unit price');
+check('quotes: adding a line shows the line editor', !!priceInput);
+const searchInput = [...document.body.querySelectorAll('input')].find((i) => i.placeholder === 'Search salable parts');
+await act(async () => {
+  searchInput.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  searchInput.focus();
+  await new Promise((r) => setTimeout(r, 20));
+});
+await act(async () => {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  setter.call(searchInput, 'OMG');
+  searchInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 50));
+});
+const option = [...document.body.querySelectorAll('[role="option"]')].find((o) => o.textContent.includes('OMG-CUSTOM-1'));
+check('quotes: part search asks InvenTree for salable, active parts', partSearches.some((p) => p && p.search === 'OMG' && p.salable === true && p.active === true));
+check('quotes: part search offers salable parts from InvenTree', !!option);
+await act(async () => { option.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); await new Promise((r) => setTimeout(r, 20)); });
+await act(async () => {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  setter.call(priceInput, '1450');
+  priceInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 20));
+});
+const saveBtn = [...document.body.querySelectorAll('button')].find((b) => b.textContent === 'Save lines');
+await act(async () => { saveBtn.click(); await new Promise((r) => setTimeout(r, 50)); });
+const saved = postedBodies.find((b) => b && b.action === 'set_lines');
+check('quotes: save lines sends part, item and price', !!saved && saved.lines[0].part_id === 42 && saved.lines[0].unit_price === '1450' && saved.lines[0].item_id === 11);
+check('quotes: send and decline actions available', [...document.body.querySelectorAll('button')].some((b) => b.textContent === 'Send quote') && page().includes('Decline reason'));
 
 const reactErrors = errors.filter((e) => !e.includes('Not implemented: window.computedStyle') && !e.includes('Could not parse CSS'));
 console.error = origError;

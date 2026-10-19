@@ -10,7 +10,12 @@ An [InvenTree](https://inventree.org) plugin that runs a WooCommerce shop from y
 - **Turns paid orders into Sales Orders**: customer, contact, shipping address, line items, shipping and fees,
   with a note back on the WooCommerce order.
 - **Creates Build Orders** for build-to-order items that stock can't cover, linked to the Sales Order.
-- **Panels in InvenTree**: a Web Shop dashboard widget, a Web Shop panel on each salable part (in the shop? if
+- **Quote requests**: logged-in customers ask for prices on as many items as they need, each with layout drawings
+  or photos, a sample, or a call to discuss. You price them in InvenTree; they accept all or part of the quote
+  online and pay (or charge their account). Needs the companion WordPress plugin.
+- **Shipments back to the customer**: completing a shipment in InvenTree emails "dispatched" / "delivered on"
+  (with tracking if any) and completes the WooCommerce order once everything has shipped.
+- **Panels in InvenTree**: Web Shop and Quote Requests dashboard widgets, a Web Shop panel on each salable part (in the shop? if
   not, why not?), and a Web Order panel on Sales Orders that came from the shop.
 - **Credit accounts**: customers you approve in InvenTree can "charge to my account" at checkout (with their PO
   number), within a credit limit, using the companion WordPress plugin in `wordpress/inventree-shop/`.
@@ -28,7 +33,7 @@ A part is published when it is **Active** and **Salable**, and either:
 | Shop parameter (default name `Web Shop`) | Result |
 |---|---|
 | `Yes` / `Stock` | Sold from stock only - WooCommerce won't sell more than you have |
-| `Build` / `Build to order` | Built to order - backorders allowed, lead time from the `Lead Time` parameter |
+| `Build` / `Build to order` | Built to order - backorders allowed, lead time from the `Lead Time` parameter, or the *Default lead time* setting (6 weeks) |
 | `No` | Kept out of the shop, even inside the shop category |
 | *(not set)* | Published only if the part is in the **Shop category** (or below it), using the category mode |
 
@@ -37,6 +42,8 @@ it only goes on sale once its BOM is **validated** in InvenTree (and, if you tur
 locked part*, once the part is **locked**). Edit the BOM later and InvenTree un-validates it, which takes the
 product out of the shop until you validate it again. Parts waiting on this are listed under `awaiting_release`
 in the status endpoint. If the part has a **revision** it's shown on the product page.
+Every build-to-order product also shows the *Build-to-order note* setting, e.g. "Call 08 1234 5678 to discuss
+your requirements."
 
 **Documents.** Mark an attachment on the part for the shop by giving it the tag `shop`, or by putting `[shop]`
 in its comment. It's listed under "Documents" on the product page, named after its comment (without the marker)
@@ -119,6 +126,57 @@ price and image on a part. This plugin has no dependency on how those get set.
 | Sync accounts to the shop | Keep approval and available credit up to date on shop logins |
 | Build to order needs a validated BOM / a locked part | When a build-to-order design counts as released |
 | Build Orders for build-to-order items | Shortfall only, full quantity, or off |
+| Default lead time / Build-to-order note | Lead time when a part has none (default 6 weeks), and a note on build-to-order products |
+| Tell the customer about shipments | Dispatched / delivered emails and completing the order |
+| Shop link secret | Shared with the WordPress plugin; signs quote requests and notifications |
+| Quotes valid for / Expiry reminder | Days a quote can be accepted (30), reminder days before expiry (3) |
+| Largest quote upload / Most files / Upload file types | Quote upload limits |
+
+## Quote requests
+
+Customers must be **logged in** (no anonymous requests). The flow:
+
+1. **Request** (WordPress, the `[inventree_quote_request]` page, or "Request a custom version" on a product):
+   any number of items - custom harness, copy of an existing harness, or component - each with quantity,
+   description, OEM part number and machine. A harness item needs at least one of: **layout drawing(s) / photos**
+   (uploaded), **a sample** (they get a printable sample label with the reference and your address), or **a call
+   to discuss** (phone and best time). Plus needed-by date, delivery postcode and notes. The customer and you are
+   both emailed. If InvenTree can't be reached the request is queued on the website and retried hourly - the
+   customer still gets their reference straight away.
+2. **Work it** (InvenTree dashboard > **Quote Requests**): mark samples received (the customer is emailed),
+   record calls, then price each item with one or more lines - an InvenTree part (search), quantity, unit price
+   ex tax, lead time (defaults to the default lead time) - or mark it **can't supply** with a reason. Build-to-order
+   assemblies must be released (BOM validated) before you can send them, same rule as the shop.
+3. **Send**: the quote gets a validity (default 30 days) and the customer is emailed. A part that isn't in the
+   shop gets a **hidden, quote-only** WooCommerce product: never shown or buyable in the catalogue, only payable
+   through its quote's order.
+4. **Accept** (My Account > Quotes): the customer unticks lines they don't want and accepts. InvenTree creates a
+   pending-payment order with exactly those lines at the quoted prices (prices never come from the browser) and
+   sends them to pay - online, or "Charge to my account" for approved accounts.
+5. **Paid**: the normal order flow - Sales Order (customer reference = their PO, else the quote reference),
+   Build Orders with the quoted lead times - and the quote is marked accepted, with the customer's drawings
+   copied onto the Sales Order as attachments.
+6. **Expiry**: a reminder a few days before (default 3), then the quote expires and any unpaid order is
+   cancelled. You can also reopen a sent quote to change it, or decline it with a reason.
+
+Uploads: file types and sizes are settings (default 20 files, 20 MB each, PDFs/images/DXF/DWG/Office/CSV/text).
+Files are stored privately and only staff can download them. Make sure the web servers allow uploads that big:
+nginx `client_max_body_size` on InvenTree, and PHP `upload_max_filesize` / `post_max_size` on the website.
+
+The website and InvenTree talk to each other with the **Shop link secret** (set the same value on both sides):
+every call is HMAC-signed with a timestamp, and a quote's files are covered by SHA-256 hashes in the signed
+payload, so nothing can be added or changed in transit.
+
+## Shipments
+
+When a web order's **Shipment** is completed in InvenTree, the customer gets a WooCommerce customer note (emailed):
+"Your order has been dispatched (shipment 1 of 2)", with the tracking number and link if the shipment has them -
+or "ready for collection" for a Local pickup order without tracking. Set the shipment's delivery date and they
+get "delivered on ...". When everything has shipped (or the Sales Order is completed) the WooCommerce order is
+set to Completed. Each message is sent once, however many times the shipment is saved.
+
+Rates at checkout are WooCommerce's: e.g. a Local delivery method with postcode zones, plus Local pickup; add a
+carrier plugin later if you post parcels.
 
 ## Panels in InvenTree
 
@@ -139,10 +197,13 @@ price and image on a part. This plugin has no dependency on how those get set.
 Paid orders arrive with status *processing* and become Sales Orders. Unpaid ones (a bank transfer waiting in
 *on-hold*) wait until you mark them paid.
 
-**Charge to account** needs the companion WordPress plugin, `wordpress/inventree-shop/`:
+**Charge to account** (and quote requests) need the companion WordPress plugin, `wordpress/inventree-shop/`:
 
 1. Zip the `inventree-shop` folder and upload it in *WordPress > Plugins > Add New > Upload*, then activate.
    It works with both the classic and the block (Cart & Checkout blocks) checkout.
+   Then *WooCommerce > InvenTree Shop*: InvenTree address, **Shop link secret** (same as in InvenTree), the quote
+   request page (create a page containing `[inventree_quote_request]`), who gets new-request emails, your phone,
+   and the address samples are sent to.
 2. *WooCommerce > Settings > Payments > Charge to account (InvenTree)*: enable it, choose whether to ask for
    a purchase order number (optional / required / off), and the status orders get (Processing, or On hold
    if you want to release each one yourself first).
@@ -189,6 +250,8 @@ After a web order is committed the plugin fires InvenTree plugin events (needs *
 |---|---|
 | `woocommerce.salesorder_created` | `id` (Sales Order), `woo_order_id`, `woo_order_number`, `on_account`, `held`, `build_ids` |
 | `woocommerce.build_created` | `id` (Build Order), `sales_order`, `part`, `quantity`, `woo_order_id` |
+| `woocommerce.quote_received` | `id` (Quote Request), `reference` |
+| `woocommerce.quote_accepted` | `id` (Quote Request), `reference`, `sales_order` |
 
 Another plugin subscribes with `EventMixin`:
 
@@ -228,6 +291,10 @@ WooCommerce retries. Failed orders are retried automatically (up to 5 times), or
 | `GET /plugin/woocommerce/part/<part>/` | Signed in | Part's shop status (the part panel) |
 | `POST /plugin/woocommerce/part/<part>/` | Staff | Re-send one part now |
 | `GET /plugin/woocommerce/salesorder/<so>/` | Signed in | Web order details (the Sales Order panel) |
+| `POST /plugin/woocommerce/quotes/submit/` | WordPress (signed) | New quote request (payload + files) |
+| `POST /plugin/woocommerce/quotes/customer/` | WordPress (signed) | A customer's quotes, for My Account |
+| `POST /plugin/woocommerce/quotes/accept/` | WordPress (signed) | Accept lines, get the payment link |
+| `GET/POST /plugin/woocommerce/quotes/...` | Staff | Quote Requests widget (list, detail, actions, files) |
 | `GET /plugin/woocommerce/status/` | Staff | Config problems, last sync, product errors, recent orders |
 | `POST /plugin/woocommerce/sync/` | Staff | Sync now |
 | `POST /plugin/woocommerce/test-connection/` | Staff | Check the API key |
@@ -252,8 +319,8 @@ actions.
 
 ## Roadmap
 
-- Custom quote requests with file uploads (with a companion WordPress plugin)
-- Shipment and tracking pushed back to WooCommerce
+- Product weights and sizes from InvenTree parameters, for carrier rates at checkout
+- Tracking through WooCommerce's order fulfillments (10.2+) when it leaves beta
 
 ## Development
 
@@ -268,6 +335,9 @@ database. See the docstring at the top of that file.
 `tests/frontend/render_panels.mjs` renders the three InvenTree panels with React 19 and Mantine 9 in jsdom
 (see the comment at the top for the npm packages it needs). The panels are a single plain JavaScript file,
 `inventree_woocommerce/static/shop_panels.js`, with no build step.
+
+`wordpress/tests/test-quotes.php` runs the quote pages inside a **throwaway** WordPress against a **throwaway**
+InvenTree: `php wordpress/tests/test-quotes.php /path/to/wordpress http://127.0.0.1:8000 <shop link secret>`.
 
 `wordpress/tests/test-gateway.php` checks the account payment method inside a **throwaway** WordPress install
 (with a small WooCommerce stand-in): `php wordpress/tests/test-gateway.php /path/to/wordpress`.

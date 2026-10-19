@@ -120,6 +120,26 @@ class FakeClient:
     def find_customer_by_email(self, email):
         return FakeClient.customers.get(email.lower())
 
+    def get(self, path, **params):
+        FakeClient.calls.append({"get": path})
+        if path.startswith("customers/"):
+            return {"id": int(path.split("/")[1]), "billing": {"first_name": "Bob", "email": "buyer@acme.example",
+                    "address_1": "9 Pit Rd", "postcode": "6000", "city": "Perth", "country": "AU"}, "shipping": {}}
+        if path.startswith("orders/"):
+            return {"id": int(path.split("/")[1]), "status": "pending", "date_paid": None}
+        return {}
+
+    def post(self, path, data):
+        FakeClient.calls.append({"post": path, "data": data})
+        FakeClient.next_id += 1
+        if path == "orders":
+            return {"id": FakeClient.next_id, "payment_url": f"https://shop.example.com/pay/{FakeClient.next_id}"}
+        return {"id": FakeClient.next_id}
+
+    def put(self, path, data):
+        FakeClient.calls.append({"put": path, "data": data})
+        return {}
+
     def batch(self, resource, create=(), update=(), delete=()):
         FakeClient.calls.append({"resource": resource, "update": list(update)})
         return {"create": [], "update": [{"id": u["id"]} for u in update], "delete": []}
@@ -461,6 +481,201 @@ import inventree_woocommerce  # noqa: E402
 
 assert os.path.exists(os.path.join(os.path.dirname(inventree_woocommerce.__file__), "static", "shop_panels.js"))
 print("panels registered")
+
+# ======================= quote requests =======================
+
+from django.core.files.uploadedfile import SimpleUploadedFile  # noqa: E402
+
+import inventree_woocommerce.shop_link as shop_link  # noqa: E402
+from inventree_woocommerce.models import QuoteRequest  # noqa: E402
+from inventree_woocommerce.shop_link import sign  # noqa: E402
+
+plugin.set_setting("SHOP_SECRET", "linksecret")
+plugin.set_setting("BUILD_NOTE", "Call 08 1234 5678 to discuss.")
+notifications = []
+shop_link.send_notification = lambda event, payload: notifications.append((event, payload))
+
+# a new custom harness, released (BOM validated)
+custom = Part.objects.create(name="OMG-CUSTOM-1", description="Custom loom", category=cat, salable=True,
+                             active=True, assembly=True)
+BomItem.objects.create(part=custom, sub_part=plug, quantity=4)
+custom.validate_bom(None)
+
+drawing_bytes = b"%PDF-1.4 customer layout"
+qpayload = {
+    "reference": "QR-261019-TEST",
+    "customer": {"id": 77, "email": "buyer@acme.example", "name": "Bob", "phone": "0400 000 000", "company": "Acme"},
+    "required_by": "2026-12-01", "delivery_postcode": "6430", "notes": "Two machines",
+    "items": [
+        {"position": 1, "kind": "custom", "description": "Engine loom like the sample", "machine": "CAT R1300G",
+         "quantity": 2, "provide": {"sample": True}},
+        {"position": 2, "kind": "copy", "description": "Dash harness", "quantity": 1, "provide": {"drawings": True}},
+    ],
+    "files": [{"field": "item_2", "upload": "file_0", "name": "layout.pdf", "size": len(drawing_bytes),
+               "sha256": hashlib.sha256(drawing_bytes).hexdigest()}],
+}
+raw = json.dumps(qpayload)
+
+
+def submit(raw_payload, file_bytes, secret="linksecret"):
+    ts, sg = sign(secret, raw_payload.encode())
+    return client.post("/plugin/woocommerce/quotes/submit/", secure=True,
+                       data={"payload": raw_payload, "file_0": SimpleUploadedFile("layout.pdf", file_bytes)},
+                       HTTP_X_INVENTREE_SHOP_TIMESTAMP=ts, HTTP_X_INVENTREE_SHOP_SIGNATURE=sg)
+
+
+assert submit(raw, drawing_bytes, secret="wrong").status_code == 401
+r = submit(raw, b"%PDF-1.4 tampered!!!!!!")
+print("tampered file:", r.status_code, r.json())
+assert r.status_code == 400 and "intact" in r.json()["detail"]
+bad = json.dumps(dict(qpayload, items=[{"position": 1, "kind": "custom", "description": "x", "quantity": 1}], files=[]))
+r = submit(bad, drawing_bytes)
+assert r.status_code == 400 and "layout drawing" in r.json()["detail"]
+r = submit(raw, drawing_bytes)
+print("submit:", r.status_code, r.json())
+assert r.status_code == 201 and r.json()["status"] == "waiting_sample"
+assert submit(raw, drawing_bytes).json().get("duplicate") is True
+quote = QuoteRequest.objects.get(reference="QR-261019-TEST")
+assert quote.company_id == acme.pk  # matched through the shop login link
+assert quote.files.count() == 1 and quote.files.first().item.position == 2
+assert ("woocommerce.quote_received", {"id": quote.pk, "reference": quote.reference}) in fired
+
+# staff
+lst = staff_client.get("/plugin/woocommerce/quotes/", secure=True).json()
+print("quote list:", [(q["reference"], q["status"], q["samples_due"]) for q in lst["quotes"]])
+assert lst["quotes"][0]["samples_due"] == 1
+detail = staff_client.get(f"/plugin/woocommerce/quotes/{quote.pk}/", secure=True).json()
+f = staff_client.get(detail["files"][0]["url"], secure=True)
+assert f.status_code == 200 and b"".join(f.streaming_content) == drawing_bytes
+assert viewer.get(detail["files"][0]["url"], secure=True).status_code == 403
+item1, item2 = detail["items"][0]["id"], detail["items"][1]["id"]
+
+
+def act(**data):
+    r = staff_client.post(f"/plugin/woocommerce/quotes/{quote.pk}/", data=json.dumps(data),
+                          content_type="application/json", secure=True)
+    return r.status_code, r.json()
+
+
+code, body = act(action="sample_received", item_id=item1)
+print("sample received:", code, body["detail"], body["quote"]["status"])
+assert code == 200 and body["quote"]["status"] == "reviewing" and notifications[-1][0] == "sample_received"
+code, body = act(action="send")
+assert code == 400 and "Add at least one priced line" in body["detail"]
+code, body = act(action="set_lines", lines=[{"item_id": item1, "part_id": custom.pk, "quantity": 2, "unit_price": "1450"}])
+code, body = act(action="send")
+print("send with item 2 unpriced:", code, body["detail"])
+assert code == 400 and "Item 2 has no lines" in body["detail"]
+locked_out = Part.objects.create(name="UNSALABLE", category=cat, salable=False, active=True)
+code, body = act(action="set_lines", lines=[{"item_id": item2, "part_id": locked_out.pk, "quantity": 1, "unit_price": "5"}])
+assert code == 400 and "isn't marked Salable" in body["detail"]
+code, body = act(action="set_lines", lines=[
+    {"item_id": item1, "part_id": custom.pk, "quantity": 2, "unit_price": "1450", "description": "Engine loom to sample"},
+    {"item_id": item2, "part_id": plug.pk, "quantity": 10, "unit_price": "4.205", "lead_time": "In stock"},
+])
+assert code == 200, body
+code, body = act(action="send")
+print("send:", code, body["detail"], body["quote"]["total"])
+assert code == 200 and body["quote"]["status"] == "quoted" and body["quote"]["total"] == "2942.10"
+created_products = [c for c in FakeClient.calls if c.get("post") == "products"]
+print("hidden product:", created_products[-1]["data"]["catalog_visibility"], created_products[-1]["data"]["meta_data"][-1])
+assert created_products[-1]["data"]["catalog_visibility"] == "hidden"
+custom_link = ProductLink.objects.get(part_id=custom.pk)
+assert custom_link.quote_only and not custom_link.published
+assert notifications[-1][0] == "quote_sent"
+assert QuoteRequest.objects.get(pk=quote.pk).lines.get(part_id=custom.pk).lead_time == "6 weeks"
+
+n_calls = len(FakeClient.calls)
+sync_mod.sync_parts(None)
+assert not any(u.get("id") == custom_link.woo_product_id for c in FakeClient.calls[n_calls:] for u in c.get("update", [])), \
+    "full sync must leave quote-only products alone"
+
+
+def signed_post(path, data):
+    b = json.dumps(data).encode()
+    ts, sg = sign("linksecret", b)
+    return client.post(path, data=b, content_type="application/json", secure=True,
+                       HTTP_X_INVENTREE_SHOP_TIMESTAMP=ts, HTTP_X_INVENTREE_SHOP_SIGNATURE=sg)
+
+
+mine = signed_post("/plugin/woocommerce/quotes/customer/", {"customer_id": 77}).json()["quotes"]
+print("customer view:", [(q["reference"], q["status"], len(q["lines"]), q["can_accept"]) for q in mine])
+assert mine[0]["can_accept"] and "staff_notes" not in mine[0] and "part_id" not in mine[0]["lines"][0]
+assert signed_post("/plugin/woocommerce/quotes/customer/", {"customer_id": 88}).json()["quotes"] == []
+custom_line = [l for l in mine[0]["lines"] if l["description"] == "Engine loom to sample"][0]
+r = signed_post("/plugin/woocommerce/quotes/accept/", {"customer_id": 88, "reference": quote.reference,
+                                                       "line_ids": [custom_line["id"]]})
+assert r.status_code == 400, "someone else's quote can't be accepted"
+r = signed_post("/plugin/woocommerce/quotes/accept/", {"customer_id": 77, "reference": quote.reference,
+                                                       "line_ids": [custom_line["id"]]})
+print("accept:", r.status_code, r.json())
+assert r.status_code == 200 and r.json()["payment_url"].startswith("https://shop.example.com/pay/")
+woo_quote_order = [c for c in FakeClient.calls if c.get("post") == "orders"][-1]["data"]
+assert len(woo_quote_order["line_items"]) == 1 and woo_quote_order["line_items"][0]["total"] == "2900.00"
+quote.refresh_from_db()
+assert quote.woo_order_id and quote.status == "quoted"
+
+# the customer pays it -> Sales Order, quote accepted, files copied, Build Order with the quoted lead time
+paid = {"id": quote.woo_order_id, "number": str(quote.woo_order_id), "status": "processing", "currency": "AUD",
+        "total": "3190.00", "total_tax": "290.00", "payment_method": "stripe", "payment_method_title": "Card",
+        "customer_id": 77, "billing": woo_quote_order["billing"], "shipping": {},
+        "meta_data": [{"key": "inventree_quote", "value": quote.reference}],
+        "line_items": [dict(li, sku="", name="Engine loom") for li in woo_quote_order["line_items"]]}
+pb = json.dumps(paid).encode()
+r = client.post("/plugin/woocommerce/webhook/order/", data=pb, content_type="application/json", secure=True,
+                HTTP_X_WC_WEBHOOK_SIGNATURE=base64.b64encode(hmac.new(b"whsec", pb, hashlib.sha256).digest()).decode(),
+                HTTP_X_WC_WEBHOOK_RESOURCE="order")
+qrec = WooOrder.objects.get(woo_order_id=quote.woo_order_id)
+quote.refresh_from_db()
+qso = SalesOrder.objects.get(pk=qrec.sales_order_id)
+qbuild = Build.objects.get(pk=qrec.build_order_ids[0])
+print("quote paid:", quote.status, qso.reference, qso.customer.name, qso.customer_reference, qbuild.reference,
+      qbuild.quantity, qbuild.target_date, qso.attachments.count())
+assert quote.status == "accepted" and quote.sales_order_id == qso.pk and qso.customer == acme
+assert qso.customer_reference == quote.reference
+assert qbuild.part == custom and qbuild.quantity == 2 and qbuild.target_date == date.today() + timedelta(days=42)
+assert qso.attachments.count() == 1
+assert any(e == "woocommerce.quote_accepted" and kw["sales_order"] == qso.pk for e, kw in fired)
+
+# expiry and reminders
+from inventree_woocommerce.quotes import expire_quotes  # noqa: E402
+
+old_q = QuoteRequest.objects.create(reference="QR-OLD-0001", woo_customer_id=77, status="quoted",
+                                    valid_until=date.today() - timedelta(days=1), woo_order_id=5555)
+soon_q = QuoteRequest.objects.create(reference="QR-SOON-0001", woo_customer_id=77, status="quoted",
+                                     valid_until=date.today() + timedelta(days=2))
+expire_quotes(load_config())
+old_q.refresh_from_db()
+soon_q.refresh_from_db()
+print("expiry:", old_q.status, soon_q.status, soon_q.expiry_reminded, [n[0] for n in notifications[-2:]])
+assert old_q.status == "expired" and old_q.woo_order_id is None
+assert {"put": "orders/5555", "data": {"status": "cancelled"}} in FakeClient.calls
+assert soon_q.status == "quoted" and soon_q.expiry_reminded
+assert [n[0] for n in notifications[-2:]] == ["quote_expired", "quote_expiring"]
+expire_quotes(load_config())
+assert [n[0] for n in notifications].count("quote_expiring") == 1, "only one reminder"
+
+# ======================= shipments back to the shop =======================
+from order.models import SalesOrderShipment  # noqa: E402
+
+shipment = SalesOrderShipment.objects.create(order=so, reference="1", tracking_number="",
+                                             shipment_date=date.today())
+plugin.process_event("salesordershipment.completed", id=shipment.pk)
+notes_sent = [c["note"] for c in FakeClient.calls if "note" in c]
+print("dispatch note:", notes_sent[-1])
+assert notes_sent[-1][0] == 9001 and notes_sent[-1][1] == "Your order has been dispatched."
+plugin.process_event("salesordershipment.completed", id=shipment.pk)
+assert len([c for c in FakeClient.calls if "note" in c]) == len(notes_sent), "no duplicate email"
+shipment.delivery_date = date(2026, 10, 21)
+shipment.save()
+plugin.process_event("order_salesordershipment.saved", id=shipment.pk)
+notes_sent = [c["note"] for c in FakeClient.calls if "note" in c]
+print("delivered note:", notes_sent[-1][1])
+assert notes_sent[-1][1] == "Your order was delivered on 21 Oct 2026."
+assert not any(c.get("put") == "orders/9001" for c in FakeClient.calls), "not complete while lines are unshipped"
+plugin.process_event("salesorder.completed", id=so.pk)
+assert {"put": "orders/9001", "data": {"status": "completed"}} in FakeClient.calls
+print("order completed in shop")
 
 # --- staff endpoint needs auth ---
 assert client.get("/plugin/woocommerce/status/", secure=True).status_code in (401, 403)

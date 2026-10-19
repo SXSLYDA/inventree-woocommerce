@@ -40,10 +40,34 @@ class Fake_Cart {
 
 $GLOBALS['fake_orders'] = array();
 $GLOBALS['fake_notices'] = array();
-$GLOBALS['fake_wc'] = (object) array( 'cart' => new Fake_Cart() );
+class Fake_Mailer {
+	public function wrap_message( $heading, $html ) { return '<h1>' . $heading . '</h1>' . $html; }
+	public function send( $to, $subject, $message ) { return wp_mail( $to, $subject, $message, array( 'Content-Type: text/html' ) ); }
+}
+class Fake_WC {
+	public $cart;
+	public function __construct() { $this->cart = new Fake_Cart(); }
+	public function mailer() { return new Fake_Mailer(); }
+}
+class WooCommerce {}
+$GLOBALS['fake_wc'] = new Fake_WC();
 function WC() { return $GLOBALS['fake_wc']; }
 function wc_get_order( $id ) { return isset( $GLOBALS['fake_orders'][ $id ] ) ? $GLOBALS['fake_orders'][ $id ] : false; }
 function wc_add_notice( $m, $t = 'success' ) { $GLOBALS['fake_notices'][] = $m; }
 function wc_price( $v ) { return '$' . number_format( (float) $v, 2 ); }
 function woocommerce_form_field( $key, $args, $value = '' ) { echo '<input name="' . esc_attr( $key ) . '"' . ( ! empty( $args['required'] ) ? ' required' : '' ) . '>'; }
 function wc_get_price_decimals() { return 2; }
+
+function wc_get_page_permalink( $page ) { return home_url( '/my-account/' ); }
+function wc_get_endpoint_url( $endpoint, $value = '', $permalink = '' ) { return trailingslashit( $permalink ) . $endpoint . '/' . ( $value ? trailingslashit( $value ) : '' ); }
+function wc_date_format() { return 'j M Y'; }
+$GLOBALS['fake_products'] = array();
+function wc_get_product_id_by_sku( $sku ) { foreach ( $GLOBALS['fake_products'] as $id => $p ) { if ( $p->get_sku() === $sku ) { return $id; } } return 0; }
+function wc_get_product( $id ) { return isset( $GLOBALS['fake_products'][ $id ] ) ? $GLOBALS['fake_products'][ $id ] : null; }
+class Fake_Product {
+	public $meta; public $sku; public $name;
+	public function __construct( $sku, $name, $meta = array() ) { $this->sku = $sku; $this->name = $name; $this->meta = $meta; }
+	public function get_meta( $k ) { return isset( $this->meta[ $k ] ) ? $this->meta[ $k ] : ''; }
+	public function get_sku() { return $this->sku; }
+	public function get_name() { return $this->name; }
+}

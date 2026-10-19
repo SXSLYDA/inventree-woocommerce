@@ -38,7 +38,9 @@ jobs:
       - name: PHP syntax
         run: find wordpress -name "*.php" -print0 | xargs -0 -n1 php -l
       - name: JS syntax
-        run: node --check wordpress/inventree-shop/assets/account-blocks.js
+        run: |
+          node --check wordpress/inventree-shop/assets/account-blocks.js
+          node --check wordpress/inventree-shop/assets/quote-form.js
 
   panels:
     runs-on: ubuntu-latest

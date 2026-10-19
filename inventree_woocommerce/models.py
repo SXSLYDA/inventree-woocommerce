@@ -27,6 +27,7 @@ class ProductLink(models.Model):
     )
     mode = models.CharField(max_length=10, choices=Mode.choices, blank=True)
     published = models.BooleanField(default=False, help_text="Currently live in the shop")
+    quote_only = models.BooleanField(default=False, help_text="Hidden product made for a quote, not in the catalogue")
     woo_permalink = models.CharField(max_length=500, blank=True, help_text="Product page in the shop")
 
     # Change detection: only send WooCommerce what actually changed.
@@ -117,6 +118,8 @@ class WooOrder(models.Model):
     on_account = models.BooleanField(default=False, help_text="Charged to the customer's account, not paid online")
     held = models.BooleanField(default=False, help_text="Sales Order was put on hold for a person to check")
     build_order_ids = models.JSONField(default=list, blank=True, help_text="InvenTree Build Orders created")
+    shipments_notified = models.JSONField(default=dict, blank=True,
+                                          help_text="{shipment id: [stages already sent to the customer]}")
     warnings = models.TextField(blank=True, help_text="Created, but something needs a person to check")
     error = models.TextField(blank=True)
     attempts = models.PositiveSmallIntegerField(default=0)
@@ -131,3 +134,139 @@ class WooOrder(models.Model):
 
     def __str__(self):
         return f"WooCommerce order #{self.woo_order_number or self.woo_order_id} ({self.state})"
+
+
+# ---------------------------------------------------------------------------
+# Quote requests (submitted from the shop by logged-in customers)
+# ---------------------------------------------------------------------------
+
+def _quote_file_path(instance, filename):
+    """Private, unguessable storage path: woocommerce_quotes/<reference>/<random>.<ext>"""
+    import os
+    import uuid
+
+    ext = os.path.splitext(filename)[1].lower()[:10]
+    return f"woocommerce_quotes/{instance.request.reference}/{uuid.uuid4().hex}{ext}"
+
+
+class QuoteRequest(models.Model):
+    """A customer's request for a quote: one or more items, with drawings, samples or a call."""
+
+    class Status(models.TextChoices):
+        NEW = "new", "New"
+        WAITING_SAMPLE = "waiting_sample", "Waiting for sample"
+        CALL = "call", "Call to discuss"
+        REVIEWING = "reviewing", "Reviewing"
+        QUOTED = "quoted", "Quoted"
+        ACCEPTED = "accepted", "Accepted"
+        DECLINED = "declined", "Declined"
+        EXPIRED = "expired", "Expired"
+        CANCELLED = "cancelled", "Cancelled"
+
+    OPEN = (Status.NEW, Status.WAITING_SAMPLE, Status.CALL, Status.REVIEWING)
+
+    reference = models.CharField(max_length=32, unique=True, help_text="e.g. QR-261019-7KQ2 (made by the shop)")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.NEW, db_index=True)
+
+    woo_customer_id = models.PositiveBigIntegerField(db_index=True)
+    name = models.CharField(max_length=200, blank=True)
+    email = models.CharField(max_length=254, blank=True)
+    phone = models.CharField(max_length=50, blank=True)
+    company_name = models.CharField(max_length=200, blank=True, help_text="As typed by the customer")
+    company_id = models.PositiveIntegerField(null=True, blank=True, help_text="InvenTree customer company")
+
+    required_by = models.DateField(null=True, blank=True)
+    delivery_postcode = models.CharField(max_length=20, blank=True)
+    notes = models.TextField(blank=True, help_text="Customer's notes")
+
+    staff_notes = models.TextField(blank=True)
+    decline_reason = models.TextField(blank=True)
+    currency = models.CharField(max_length=3, default="AUD")
+    valid_until = models.DateField(null=True, blank=True)
+    expiry_reminded = models.BooleanField(default=False)
+
+    woo_order_id = models.PositiveBigIntegerField(null=True, blank=True, help_text="Pending order for acceptance")
+    sales_order_id = models.PositiveIntegerField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    quoted_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        app_label = "inventree_woocommerce"
+        ordering = ["-created_at"]
+        verbose_name = "quote request"
+
+    def __str__(self):
+        return f"{self.reference} ({self.get_status_display()})"
+
+
+class QuoteItem(models.Model):
+    """One thing the customer wants priced."""
+
+    class Kind(models.TextChoices):
+        CUSTOM = "custom", "Custom harness"
+        COPY = "copy", "Copy of an existing harness"
+        COMPONENT = "component", "Component"
+
+    class State(models.TextChoices):
+        OPEN = "open", "Open"
+        QUOTED = "quoted", "Quoted"
+        CANNOT = "cannot", "Can't supply"
+
+    request = models.ForeignKey(QuoteRequest, on_delete=models.CASCADE, related_name="items")
+    position = models.PositiveSmallIntegerField(default=1)
+    kind = models.CharField(max_length=12, choices=Kind.choices, default=Kind.CUSTOM)
+    description = models.TextField(blank=True)
+    oem_part_number = models.CharField(max_length=100, blank=True)
+    machine = models.CharField(max_length=200, blank=True, help_text="Make / model / serial")
+    quantity = models.PositiveIntegerField(default=1)
+    reference_sku = models.CharField(max_length=100, blank=True, help_text="Shop product it was based on, if any")
+
+    sending_sample = models.BooleanField(default=False)
+    sample_received_at = models.DateTimeField(null=True, blank=True)
+    wants_call = models.BooleanField(default=False)
+    call_time = models.CharField(max_length=100, blank=True, help_text="Best time to call")
+    called_at = models.DateTimeField(null=True, blank=True)
+    call_notes = models.TextField(blank=True)
+
+    state = models.CharField(max_length=10, choices=State.choices, default=State.OPEN)
+    cannot_reason = models.TextField(blank=True)
+
+    class Meta:
+        app_label = "inventree_woocommerce"
+        ordering = ["request", "position", "pk"]
+
+
+class QuoteFile(models.Model):
+    """A drawing / photo the customer uploaded. Private: staff download it through the plugin."""
+
+    request = models.ForeignKey(QuoteRequest, on_delete=models.CASCADE, related_name="files")
+    item = models.ForeignKey(QuoteItem, on_delete=models.SET_NULL, null=True, blank=True, related_name="files")
+    file = models.FileField(upload_to=_quote_file_path, max_length=255)
+    original_name = models.CharField(max_length=255)
+    size = models.PositiveBigIntegerField(default=0)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        app_label = "inventree_woocommerce"
+        ordering = ["pk"]
+
+
+class QuoteLine(models.Model):
+    """A priced line on the quote: an InvenTree part, quantity and unit price (ex tax)."""
+
+    request = models.ForeignKey(QuoteRequest, on_delete=models.CASCADE, related_name="lines")
+    item = models.ForeignKey(QuoteItem, on_delete=models.SET_NULL, null=True, blank=True, related_name="lines")
+    position = models.PositiveSmallIntegerField(default=1)
+    part_id = models.PositiveIntegerField(help_text="InvenTree Part id")
+    description = models.CharField(max_length=250, blank=True, help_text="Shown to the customer")
+    quantity = models.PositiveIntegerField(default=1)
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    lead_time = models.CharField(max_length=60, blank=True)
+    accepted = models.BooleanField(default=False)
+
+    class Meta:
+        app_label = "inventree_woocommerce"
+        ordering = ["request", "position", "pk"]

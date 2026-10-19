@@ -221,6 +221,11 @@ def process_woo_order(record_pk):
     _fire(EVENT_SALES_ORDER, id=sales_order.pk, woo_order_id=record.woo_order_id,
           woo_order_number=record.woo_order_number, on_account=record.on_account, held=record.held,
           build_ids=list(result["build_ids"]))
+    if result.get("quote") is not None:
+        from .quotes import EVENT_QUOTE_ACCEPTED
+
+        _fire(EVENT_QUOTE_ACCEPTED, id=result["quote"].pk, reference=result["quote"].reference,
+              sales_order=sales_order.pk)
     for build in result["builds"]:
         _fire(EVENT_BUILD, id=build["id"], sales_order=sales_order.pk, part=build["part"],
               quantity=build["quantity"], woo_order_id=record.woo_order_id)
@@ -288,6 +293,7 @@ def _create_sales_order(order, config):
     billing = order.get("billing") or {}
     number = order.get("number") or order.get("id")
     po_number = order_meta(order, *PO_META_KEYS)
+    quote_reference = order_meta(order, "inventree_quote")
     order_total = money(order.get("total"))
 
     # --- account checks (InvenTree's own data, not what the shop believed) ---
@@ -312,6 +318,8 @@ def _create_sales_order(order, config):
         notes.append(f"Transaction: {order['transaction_id']}")
     if po_number:
         notes.append(f"Customer PO: {po_number}")
+    if quote_reference:
+        notes.append(f"From quote {quote_reference}")
     coupons = [c.get("code") for c in order.get("coupon_lines") or [] if c.get("code")]
     if coupons:
         notes.append(f"Coupons: {', '.join(coupons)} (discounts are already in the line prices)")
@@ -329,7 +337,7 @@ def _create_sales_order(order, config):
         customer=customer,
         contact=contact,
         address=address,
-        customer_reference=clip(po_number or f"WC-{number}", 64),
+        customer_reference=clip(po_number or quote_reference or f"WC-{number}", 64),
         description=clip(f"Web shop order #{number}" + (" (on account)" if on_account else ""), 250),
         link=order_admin_url(config.woo_url, order.get("id")),
         order_currency=currency,
@@ -343,6 +351,9 @@ def _create_sales_order(order, config):
     parts = Part.objects.in_bulk({link.part_id for link in product_links.values()})
     sold_part_ids = set()
     modes, lead_times = {}, {}
+    from .quotes import on_order_created, quote_line_lead_times
+
+    quoted_lead_times = quote_line_lead_times(order) if quote_reference else {}
 
     for line in order.get("line_items") or []:
         qty = money(line.get("quantity"))
@@ -356,7 +367,7 @@ def _create_sales_order(order, config):
             )
             sold_part_ids.add(part.pk)
             modes[part.pk] = link.mode or "stock"
-            lead_times[part.pk] = _lead_time(part, config)
+            lead_times[part.pk] = quoted_lead_times.get(part.pk) or _lead_time(part, config)
         else:
             # Not a product this plugin manages - keep the money on the order and flag it.
             SalesOrderExtraLine.objects.create(
@@ -377,6 +388,7 @@ def _create_sales_order(order, config):
             description=clip(f"Fee: {fee.get('name') or 'Fee'}", 250),
         )
 
+    quote = on_order_created(order, sales_order) if quote_reference else None
     build_ids, build_warnings = plan_builds(sales_order, config, modes, lead_times, number)
     warnings += build_warnings
     builds = list(Build.objects.filter(pk__in=build_ids).values("pk", "reference", "part_id", "quantity"))
@@ -399,14 +411,17 @@ def _create_sales_order(order, config):
         "build_ids": build_ids,
         "build_refs": [b["reference"] for b in builds],
         "builds": [{"id": b["pk"], "part": b["part_id"], "quantity": b["quantity"]} for b in builds],
+        "quote": quote,
     }
 
 
 def _lead_time(part, config):
-    if not config.lead_time_parameter:
-        return ""
-    param = part.parameters.filter(template__name__iexact=config.lead_time_parameter).first()
-    return (param.data or "").strip() if param else ""
+    """The part's own Lead Time parameter, else the plugin's default lead time."""
+    value = ""
+    if config.lead_time_parameter:
+        param = part.parameters.filter(template__name__iexact=config.lead_time_parameter).first()
+        value = (param.data or "").strip() if param else ""
+    return value or config.default_lead_time
 
 
 def attach_notes(instance, title, lines):

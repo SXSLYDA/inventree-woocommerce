@@ -10,6 +10,8 @@
  *   renderShopDashboard  - dashboard widget (staff)
  *   renderShopPartPanel  - "Web Shop" panel on a part
  *   renderShopOrderPanel - "Web Order" panel on a Sales Order
+ *   renderQuoteDashboard - "Quote Requests" dashboard widget (staff): list, and a
+ *                          full-size window to work each request
  */
 
 const React = window.React;
@@ -327,10 +329,313 @@ function Section({ title, children }) {
   return h(M.Stack, { gap: 4 }, h(M.Text, { size: 'sm', fw: 600 }, title), children);
 }
 
+// ---------------------------------------------------------------- quote requests
+
+const QUOTE_COLOR = {
+  new: 'blue', waiting_sample: 'orange', call: 'grape', reviewing: 'cyan', quoted: 'teal',
+  accepted: 'green', declined: 'red', expired: 'gray', cancelled: 'gray',
+};
+const OPEN_STATUSES = ['new', 'waiting_sample', 'call', 'reviewing'];
+
+function day(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleDateString();
+}
+
+function QuoteDashboard({ context }) {
+  const [filter, setFilter] = useState('open');
+  const [state, reload] = useEndpoint(context, `/quotes/?status=${filter}`);
+  const [openId, setOpenId] = useState(null);
+  return h(
+    M.Stack,
+    { gap: 'xs', h: '100%' },
+    h(
+      M.Group,
+      { justify: 'space-between' },
+      h(M.SegmentedControl, {
+        size: 'xs', value: filter, onChange: setFilter,
+        data: [
+          { value: 'open', label: 'Open' }, { value: 'accepted', label: 'Accepted' },
+          { value: 'declined', label: 'Declined' }, { value: 'expired', label: 'Expired' }, { value: 'all', label: 'All' },
+        ],
+      }),
+      h(M.Button, { size: 'xs', variant: 'subtle', onClick: reload }, 'Refresh'),
+    ),
+    h(Loading, { state }, () => {
+      const rows = state.data.quotes;
+      if (!rows.length) return h(M.Text, { size: 'sm', c: 'dimmed' }, 'No quote requests here.');
+      return h(
+        M.ScrollArea,
+        { type: 'auto', style: { flex: 1 } },
+        h(
+          M.Table,
+          { highlightOnHover: true, verticalSpacing: 4, fz: 'sm' },
+          h(M.Table.Thead, null, h(M.Table.Tr, null, ['Reference', 'Status', 'Customer', 'Items', 'Waiting on', 'Received', 'Needed by'].map((c) => h(M.Table.Th, { key: c }, c)))),
+          h(
+            M.Table.Tbody,
+            null,
+            rows.map((q) =>
+              h(
+                M.Table.Tr,
+                { key: q.id, style: { cursor: 'pointer' }, onClick: () => setOpenId(q.id) },
+                h(M.Table.Td, null, h(M.Text, { size: 'sm', fw: 600 }, q.reference)),
+                h(M.Table.Td, null, h(M.Badge, { size: 'sm', color: QUOTE_COLOR[q.status] || 'gray' }, q.status_label)),
+                h(M.Table.Td, null, [q.name, q.company_name].filter(Boolean).join(' - ')),
+                h(M.Table.Td, null, String(q.items)),
+                h(
+                  M.Table.Td,
+                  null,
+                  h(M.Group, { gap: 4 },
+                    q.samples_due ? h(M.Badge, { size: 'xs', color: 'orange', variant: 'light' }, `${q.samples_due} sample${q.samples_due > 1 ? 's' : ''}`) : null,
+                    q.calls_due ? h(M.Badge, { size: 'xs', color: 'grape', variant: 'light' }, `${q.calls_due} call${q.calls_due > 1 ? 's' : ''}`) : null),
+                ),
+                h(M.Table.Td, null, day(q.created_at)),
+                h(M.Table.Td, null, day(q.required_by)),
+              ),
+            ),
+          ),
+        ),
+      );
+    }),
+    h(
+      M.Modal,
+      { opened: openId !== null, onClose: () => { setOpenId(null); reload(); }, size: '90%', title: 'Quote request' },
+      openId !== null ? h(QuoteDetail, { context, id: openId, key: openId }) : null,
+    ),
+  );
+}
+
+function QuoteDetail({ context, id }) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    context.api
+      .get(`${BASE}/quotes/${id}/`)
+      .then((r) => setState({ loading: false, data: r.data, error: null }))
+      .catch((e) => setState({ loading: false, data: null, error: errorText(e) }));
+  }, [context.api, id]);
+  useEffect(load, [load]);
+
+  const act = (data, okColor) => {
+    setBusy(true);
+    return context.api
+      .post(`${BASE}/quotes/${id}/`, data, { timeout: 120000 })
+      .then((r) => {
+        notify(okColor || 'green', 'Quote', r.data.detail);
+        setState({ loading: false, data: r.data.quote, error: null });
+        return true;
+      })
+      .catch((e) => { notify('red', 'Quote', errorText(e)); return false; })
+      .finally(() => setBusy(false));
+  };
+
+  return h(Loading, { state }, () => {
+    const q = state.data;
+    const editable = OPEN_STATUSES.includes(q.status);
+    return h(
+      M.Stack,
+      { gap: 'md' },
+      h(
+        M.Group,
+        { justify: 'space-between', align: 'flex-start' },
+        h(
+          M.Stack,
+          { gap: 2 },
+          h(M.Group, { gap: 'xs' }, h(M.Title, { order: 3 }, q.reference), h(M.Badge, { color: QUOTE_COLOR[q.status] || 'gray' }, q.status_label)),
+          h(M.Text, { size: 'sm' }, [q.name, q.company_name].filter(Boolean).join(' - ')),
+          h(M.Group, { gap: 'md' },
+            q.email ? h(ExternalLink, { href: `mailto:${q.email}` }, q.email) : null,
+            q.phone ? h(ExternalLink, { href: `tel:${q.phone.replace(/\s+/g, '')}` }, q.phone) : null),
+        ),
+        h(Rows, {
+          rows: [
+            ['Received', when(q.created_at)],
+            ['Needed by', day(q.required_by)],
+            ['Delivery postcode', q.delivery_postcode],
+            ['Valid until', day(q.valid_until)],
+            ['Sales Order', q.sales_order_id ? h(InternalLink, { context, to: `/sales/sales-order/${q.sales_order_id}` }, 'Open') : null],
+          ],
+        }),
+      ),
+      q.notes ? h(M.Alert, { color: 'gray', title: 'Customer notes' }, q.notes) : null,
+      q.decline_reason ? h(M.Alert, { color: 'red', title: 'Declined' }, q.decline_reason) : null,
+      h(M.Title, { order: 5 }, 'Items requested'),
+      q.items.map((item) => h(QuoteItemCard, { key: item.id, item, files: q.files.filter((f) => f.item_id === item.id), editable, busy, act })),
+      q.files.some((f) => !f.item_id)
+        ? h(M.Group, { gap: 'xs' }, h(M.Text, { size: 'sm', c: 'dimmed' }, 'Other files:'),
+            q.files.filter((f) => !f.item_id).map((f) => h(ExternalLink, { key: f.id, href: f.url }, f.name)))
+        : null,
+      h(M.Title, { order: 5 }, 'Quote'),
+      h(QuoteLines, { context, quote: q, editable, busy, act }),
+      h(QuoteActions, { quote: q, busy, act }),
+      h(StaffNotes, { quote: q, busy, act }),
+    );
+  });
+}
+
+function QuoteItemCard({ item, files, editable, busy, act }) {
+  const [callNotes, setCallNotes] = useState('');
+  const [reason, setReason] = useState('');
+  const stateBadge = item.state === 'cannot'
+    ? h(M.Badge, { color: 'red', variant: 'light' }, "Can't supply")
+    : item.state === 'quoted' ? h(M.Badge, { color: 'teal', variant: 'light' }, 'Priced') : null;
+  return h(
+    M.Paper,
+    { withBorder: true, p: 'sm', radius: 'md' },
+    h(
+      M.Stack,
+      { gap: 6 },
+      h(M.Group, { gap: 'xs' },
+        h(M.Text, { fw: 600 }, `Item ${item.position}`),
+        h(M.Badge, { variant: 'outline' }, item.kind_label),
+        h(M.Badge, { variant: 'light' }, `Qty ${item.quantity}`),
+        stateBadge),
+      item.description ? h(M.Text, { size: 'sm', style: { whiteSpace: 'pre-wrap' } }, item.description) : null,
+      h(Rows, { rows: [['OEM part number', item.oem_part_number], ['Machine', item.machine], ['Based on shop product', item.reference_sku]] }),
+      files.length ? h(M.Group, { gap: 'xs' }, h(M.Text, { size: 'sm', c: 'dimmed' }, 'Files:'), files.map((f) => h(ExternalLink, { key: f.id, href: f.url }, f.name))) : null,
+      item.sending_sample
+        ? h(M.Group, { gap: 'xs' },
+            h(M.Badge, { color: item.sample_received ? 'green' : 'orange', variant: 'light' }, item.sample_received ? 'Sample received' : 'Sample on its way'),
+            !item.sample_received && editable
+              ? h(M.Button, { size: 'xs', loading: busy, onClick: () => act({ action: 'sample_received', item_id: item.id }) }, 'Mark sample received')
+              : null)
+        : null,
+      item.wants_call
+        ? h(M.Stack, { gap: 4 },
+            h(M.Group, { gap: 'xs' },
+              h(M.Badge, { color: item.called ? 'green' : 'grape', variant: 'light' }, item.called ? 'Called' : 'Wants a call'),
+              item.call_time ? h(M.Text, { size: 'xs', c: 'dimmed' }, `Best time: ${item.call_time}`) : null),
+            item.call_notes ? h(M.Text, { size: 'sm' }, item.call_notes) : null,
+            !item.called && editable
+              ? h(M.Group, { gap: 'xs', align: 'flex-end' },
+                  h(M.TextInput, { size: 'xs', placeholder: 'What was discussed', value: callNotes, onChange: (e) => setCallNotes(e.currentTarget.value), style: { flex: 1 } }),
+                  h(M.Button, { size: 'xs', loading: busy, onClick: () => act({ action: 'called', item_id: item.id, notes: callNotes }) }, 'Record call'))
+              : null)
+        : null,
+      item.state === 'cannot'
+        ? h(M.Group, { gap: 'xs' },
+            h(M.Text, { size: 'sm', c: 'red' }, item.cannot_reason),
+            editable ? h(M.Button, { size: 'xs', variant: 'subtle', loading: busy, onClick: () => act({ action: 'reopen_item', item_id: item.id }) }, 'Reopen') : null)
+        : editable
+          ? h(M.Group, { gap: 'xs', align: 'flex-end' },
+              h(M.TextInput, { size: 'xs', placeholder: "Reason (shown to the customer)", value: reason, onChange: (e) => setReason(e.currentTarget.value), style: { flex: 1 } }),
+              h(M.Button, { size: 'xs', color: 'red', variant: 'light', loading: busy, onClick: () => act({ action: 'cannot', item_id: item.id, reason }) }, "Can't supply"))
+          : null,
+    ),
+  );
+}
+
+function PartPicker({ context, value, label, onPick }) {
+  const [options, setOptions] = useState(value ? [{ value: String(value), label: label || `Part ${value}` }] : []);
+  const search = (text) => {
+    if (!text || text.length < 2) return;
+    context.api
+      .get('/api/part/', { params: { search: text, salable: true, active: true, limit: 15 } })
+      .then((r) => {
+        const results = r.data.results || r.data || [];
+        const found = results.map((p) => ({ value: String(p.pk), label: `${p.full_name || p.name}${p.description ? ' - ' + p.description : ''}` }));
+        const current = options.filter((o) => o.value === String(value));
+        setOptions([...current, ...found.filter((f) => f.value !== String(value))]);
+      })
+      .catch(() => {});
+  };
+  return h(M.Select, {
+    size: 'xs', searchable: true, placeholder: 'Search salable parts', data: options, value: value ? String(value) : null,
+    onSearchChange: search, filter: ({ options: o }) => o, nothingFoundMessage: 'Type to search',
+    onChange: (v) => { const opt = options.find((o) => o.value === v); onPick(v ? parseInt(v, 10) : null, opt ? opt.label : ''); },
+    style: { minWidth: 220 },
+  });
+}
+
+function QuoteLines({ context, quote, editable, busy, act }) {
+  const blank = () => ({ item_id: quote.items[0]?.id || null, part_id: null, part_name: '', description: '', quantity: 1, unit_price: '', lead_time: '' });
+  const [rows, setRows] = useState(quote.lines.map((l) => ({ ...l })));
+  useEffect(() => setRows(quote.lines.map((l) => ({ ...l }))), [quote]);
+  const update = (i, patch) => setRows(rows.map((r, n) => (n === i ? { ...r, ...patch } : r)));
+  const total = rows.reduce((sum, r) => sum + (parseFloat(r.unit_price) || 0) * (parseInt(r.quantity, 10) || 0), 0);
+  const itemOptions = quote.items.map((it) => ({ value: String(it.id), label: `Item ${it.position}` }));
+
+  if (!editable) {
+    if (!quote.lines.length) return h(M.Text, { size: 'sm', c: 'dimmed' }, 'No lines.');
+    return h(
+      M.Table,
+      { fz: 'sm', verticalSpacing: 4 },
+      h(M.Table.Thead, null, h(M.Table.Tr, null, ['Item', 'Part', 'Description', 'Qty', 'Unit', 'Total', 'Lead time', 'Accepted'].map((c) => h(M.Table.Th, { key: c }, c)))),
+      h(M.Table.Tbody, null, quote.lines.map((l) =>
+        h(M.Table.Tr, { key: l.id },
+          h(M.Table.Td, null, itemOptions.find((o) => o.value === String(l.item_id))?.label || ''),
+          h(M.Table.Td, null, h(InternalLink, { context, to: `/part/${l.part_id}/` }, l.part_name)),
+          h(M.Table.Td, null, l.description),
+          h(M.Table.Td, null, String(l.quantity)),
+          h(M.Table.Td, null, l.unit_price),
+          h(M.Table.Td, null, l.total),
+          h(M.Table.Td, null, l.lead_time),
+          h(M.Table.Td, null, l.accepted ? 'Yes' : '')))),
+      h(M.Table.Tfoot, null, h(M.Table.Tr, null, h(M.Table.Td, { colSpan: 5 }, h(M.Text, { size: 'sm', fw: 600, ta: 'right' }, 'Total (ex tax)')), h(M.Table.Td, null, h(M.Text, { size: 'sm', fw: 600 }, `${quote.total} ${quote.currency}`)), h(M.Table.Td, { colSpan: 2 }))),
+    );
+  }
+
+  return h(
+    M.Stack,
+    { gap: 'xs' },
+    rows.map((r, i) =>
+      h(M.Group, { key: i, gap: 'xs', align: 'flex-end', wrap: 'wrap' },
+        h(M.Select, { size: 'xs', data: itemOptions, value: r.item_id ? String(r.item_id) : null, onChange: (v) => update(i, { item_id: v ? parseInt(v, 10) : null }), w: 100, 'aria-label': 'Item' }),
+        h(PartPicker, { context, value: r.part_id, label: r.part_name, onPick: (pk, name) => update(i, { part_id: pk, part_name: name }) }),
+        h(M.TextInput, { size: 'xs', placeholder: 'Description for the customer (optional)', value: r.description, onChange: (e) => update(i, { description: e.currentTarget.value }), style: { flex: 1, minWidth: 180 } }),
+        h(M.NumberInput, { size: 'xs', min: 1, value: r.quantity, onChange: (v) => update(i, { quantity: v }), w: 70, 'aria-label': 'Quantity' }),
+        h(M.TextInput, { size: 'xs', placeholder: 'Unit price', value: r.unit_price, onChange: (e) => update(i, { unit_price: e.currentTarget.value }), w: 100 }),
+        h(M.TextInput, { size: 'xs', placeholder: 'Lead time (default if blank)', value: r.lead_time, onChange: (e) => update(i, { lead_time: e.currentTarget.value }), w: 170 }),
+        h(M.Button, { size: 'xs', variant: 'subtle', color: 'red', onClick: () => setRows(rows.filter((_, n) => n !== i)) }, 'Remove'),
+      ),
+    ),
+    h(M.Group, { justify: 'space-between' },
+      h(M.Group, { gap: 'xs' },
+        h(M.Button, { size: 'xs', variant: 'light', onClick: () => setRows([...rows, blank()]) }, 'Add line'),
+        h(M.Button, { size: 'xs', loading: busy, onClick: () => act({ action: 'set_lines', lines: rows }) }, 'Save lines')),
+      h(M.Text, { size: 'sm', fw: 600 }, `Total (ex tax): ${total.toFixed(2)} ${quote.currency}`)),
+  );
+}
+
+function QuoteActions({ quote, busy, act }) {
+  const [days, setDays] = useState(30);
+  const [reason, setReason] = useState('');
+  const editable = OPEN_STATUSES.includes(quote.status);
+  if (!editable && quote.status !== 'quoted') return null;
+  return h(
+    M.Paper,
+    { withBorder: true, p: 'sm', radius: 'md' },
+    h(
+      M.Group,
+      { gap: 'sm', align: 'flex-end', wrap: 'wrap' },
+      editable && quote.status !== 'reviewing'
+        ? h(M.Button, { size: 'xs', variant: 'light', loading: busy, onClick: () => act({ action: 'reviewing' }) }, 'Mark reviewing')
+        : null,
+      editable ? h(M.NumberInput, { size: 'xs', label: 'Valid for (days)', min: 1, value: days, onChange: setDays, w: 120 }) : null,
+      editable ? h(M.Button, { size: 'xs', color: 'teal', loading: busy, onClick: () => act({ action: 'send', valid_days: days }) }, 'Send quote') : null,
+      quote.status === 'quoted' ? h(M.Button, { size: 'xs', variant: 'light', loading: busy, onClick: () => act({ action: 'reopen' }) }, 'Reopen to change') : null,
+      h(M.TextInput, { size: 'xs', label: 'Decline reason', value: reason, onChange: (e) => setReason(e.currentTarget.value), style: { flex: 1, minWidth: 200 } }),
+      h(M.Button, { size: 'xs', color: 'red', variant: 'light', loading: busy, onClick: () => act({ action: 'decline', reason }, 'orange') }, 'Decline'),
+    ),
+  );
+}
+
+function StaffNotes({ quote, busy, act }) {
+  const [text, setText] = useState(quote.staff_notes || '');
+  return h(M.Stack, { gap: 4 },
+    h(M.Textarea, { label: 'Internal notes (never shown to the customer)', autosize: true, minRows: 2, value: text, onChange: (e) => setText(e.currentTarget.value) }),
+    h(M.Group, null, h(M.Button, { size: 'xs', variant: 'subtle', loading: busy, onClick: () => act({ action: 'notes', staff_notes: text }) }, 'Save notes')));
+}
+
 // ---------------------------------------------------------------- entry points
 
 export function renderShopDashboard(context) {
   return h(Dashboard, { context });
+}
+
+export function renderQuoteDashboard(context) {
+  return h(QuoteDashboard, { context });
 }
 
 export function renderShopPartPanel(context) {

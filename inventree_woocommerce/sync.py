@@ -221,6 +221,8 @@ def _send(client, config, creates, updates, unpublish, deletes, summary):
             link.payload_hash = new_hash
             link.mode = mode
             link.published = body.get("status") == "publish"
+            if link.published:
+                link.quote_only = False
         if "stock_quantity" in body:
             link.stock_pushed = body["stock_quantity"]
         if "images" in body:

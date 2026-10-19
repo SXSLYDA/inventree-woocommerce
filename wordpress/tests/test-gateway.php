@@ -35,6 +35,7 @@ update_user_meta( $limited, INVENTREE_META_APPROVED, 'yes' );
 update_user_meta( $limited, INVENTREE_META_CREDIT, '500.00' );
 update_user_meta( $limited, INVENTREE_META_COMPANY, 'Small Co' );
 
+delete_option( 'woocommerce_inventree_account_settings' ); // start from the defaults on every run
 $g = new InvenTree_Account_Gateway();
 WC()->cart->total = 450;
 
