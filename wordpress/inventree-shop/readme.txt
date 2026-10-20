@@ -4,7 +4,7 @@ Tags: woocommerce, inventree, trade account, credit account, purchase order
 Requires at least: 6.4
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 0.4.1
+Stable tag: 0.6.0
 License: MIT
 
 Quote requests and "charge to my account" for shops run from InvenTree.

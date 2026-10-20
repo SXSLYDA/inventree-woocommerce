@@ -62,10 +62,20 @@ price and image on a part. This plugin has no dependency on how those get set.
 
 ## Install
 
-1. Install into InvenTree's environment, or from InvenTree's *Plugin Settings > Install Plugin*:
+One version covers both halves: the InvenTree plugin and the WordPress plugin (`wordpress/inventree-shop`).
+Each [GitHub release](https://github.com/SXSLYDA/inventree-woocommerce/releases) has the WordPress zip.
+
+1. **InvenTree, package installer:** install the update script once, then let it install the plugin. It pins
+   the plugin to the newest release tag, backs up the database, runs `invoke update`, restarts InvenTree and
+   checks the plugin's migrations:
+   ```bash
+   sudo curl -fsSL -o /usr/local/bin/inventree-shop-update \
+        https://raw.githubusercontent.com/SXSLYDA/inventree-woocommerce/main/tools/server-update.sh
+   sudo chmod +x /usr/local/bin/inventree-shop-update
+   sudo inventree-shop-update            # newest release; or: sudo inventree-shop-update v0.6.0
    ```
-   pip install inventree-woocommerce
-   ```
+   **Docker:** add `inventree-woocommerce @ git+https://github.com/SXSLYDA/inventree-woocommerce.git@vX.Y.Z`
+   (the newest release tag) to `plugins.txt` in your data volume, run `invoke update` and restart.
 2. In InvenTree *Admin Center > Plugin Settings*, turn on **Enable URL integration**,
    **Enable event integration**, **Enable schedule integration** and **Enable interface integration**. Then
    activate **WooCommerce Shop**.
@@ -75,6 +85,14 @@ price and image on a part. This plugin has no dependency on how those get set.
    ```
    (Package installer: `inventree run invoke migrate`.) Make sure InvenTree's background worker is running -
    syncs and orders are processed there.
+4. **Website:** upload `inventree-shop-X.Y.Z.zip` from the same release in WordPress > Plugins > Add New >
+   Upload Plugin (WooCommerce must be active).
+
+**Updating later:** `sudo inventree-shop-update --check-only` shows what's installed, pinned and newest;
+`sudo inventree-shop-update` updates to the newest release (or name one). Read the release's notes in
+[CHANGELOG.md](CHANGELOG.md) first - they say when a release adds a migration or changes the WordPress plugin,
+and upload the matching WordPress zip when it does. Rolling back: `sudo inventree-shop-update v0.6.0
+--allow-downgrade` (only between versions with the same migrations, or restore the backup it made).
 
 ## Connect WooCommerce
 
@@ -390,23 +408,26 @@ actions.
 
 ```
 pip install -e . django djangorestframework pytest ruff
-pytest -q && ruff check .
+pytest -q tests && ruff check .
+python tools/gen_settings_doc.py        # after changing settings: rewrites docs/SETTINGS.md
 ```
 
-`tests/integration/check_inventree.py` is an end-to-end check to run inside a **throwaway** InvenTree
-database. See the docstring at the top of that file.
+`tests/live/run_live.sh` is what CI runs for the real thing: a fresh InvenTree database with the plugin,
+`tests/integration/check_inventree.py` (every InvenTree-side flow), then a real WordPress from GitHub (SQLite)
+with the inventree-shop plugin talking to InvenTree's dev server (`wordpress/tests/test-gateway.php`,
+`test-quotes.php`):
 
-`tests/frontend/render_panels.mjs` renders the three InvenTree panels with React 19 and Mantine 9 in jsdom
+```
+tests/live/run_live.sh /path/to/InvenTree /path/to/venv/bin/python /tmp/shop-live   # [--no-wordpress]
+```
+
+`tests/frontend/render_panels.mjs` renders the InvenTree panels with React 19 and Mantine 9 in jsdom
 (see the comment at the top for the npm packages it needs). The panels are a single plain JavaScript file,
 `inventree_woocommerce/static/shop_panels.js`, with no build step.
 
-`wordpress/tests/test-quotes.php` runs the quote pages inside a **throwaway** WordPress against a **throwaway**
-InvenTree: `php wordpress/tests/test-quotes.php /path/to/wordpress http://127.0.0.1:8000 <shop link secret>`.
-
-`wordpress/tests/test-gateway.php` checks the account payment method inside a **throwaway** WordPress install
-(with a small WooCommerce stand-in): `php wordpress/tests/test-gateway.php /path/to/wordpress`.
-
-Releasing: bump `inventree_woocommerce/version.py`, then tag `vX.Y.Z`. CI publishes to PyPI.
+**Releasing** is `build-and-bump.ps1` (Windows PowerShell or PowerShell 7): checks, tests, bumps both plugins'
+version, stamps the changelog, builds the WordPress zip, commits and tags `vX.Y.Z`. CI then tests the tag and
+publishes a GitHub release with the WordPress zip. See [docs/RELEASING.md](docs/RELEASING.md).
 
 ## License
 

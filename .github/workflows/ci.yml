@@ -1,13 +1,17 @@
 name: CI
 
+# Runs on every push and pull request. On a release tag (vX.Y.Z, made by
+# build-and-bump.ps1) it also checks the tag matches the code, publishes a GitHub
+# release with the WordPress plugin zip, and - only if you switch it on - deploys
+# that exact tag to your InvenTree server after every test passes.
+
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -19,17 +23,27 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: pip install "django>=5.2,<6" djangorestframework requests pytest ruff
       - run: ruff check .
-      - run: pytest -q
+      - run: pytest -q tests
+      - run: python tools/gen_settings_doc.py --check
+      - run: python tools/build_wp_zip.py --check
+      - run: shellcheck -S warning tools/server-update.sh tests/live/run_live.sh
       - name: Migrations match the models
         run: |
-          cat > /tmp/settings.py <<'EOF'
+          cat > /tmp/settings.py <<'PY'
           SECRET_KEY = "ci"
           INSTALLED_APPS = ["django.contrib.contenttypes", "django.contrib.auth", "inventree_woocommerce"]
           DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}
           DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
           USE_TZ = True
-          EOF
+          PY
           PYTHONPATH=.:/tmp:tests/stubs DJANGO_SETTINGS_MODULE=settings django-admin makemigrations inventree_woocommerce --check --dry-run
+      - name: Release tag matches version.py, the WordPress plugin and CHANGELOG.md
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(python -c "import re; print(re.search(r'PLUGIN_VERSION\s*=\s*[\"\'](.+?)[\"\']', open('inventree_woocommerce/version.py').read()).group(1))")
+          echo "tag ${GITHUB_REF_NAME}, version.py ${version}"
+          test "${GITHUB_REF_NAME}" = "v${version}" || { echo "::error::Tag ${GITHUB_REF_NAME} does not match version.py (${version})"; exit 1; }
+          grep -q "^## ${version} " CHANGELOG.md || { echo "::error::CHANGELOG.md has no '## ${version}' section"; exit 1; }
 
   wordpress:
     runs-on: ubuntu-latest
@@ -39,8 +53,7 @@ jobs:
         run: find wordpress -name "*.php" -print0 | xargs -0 -n1 php -l
       - name: JS syntax
         run: |
-          node --check wordpress/inventree-shop/assets/account-blocks.js
-          node --check wordpress/inventree-shop/assets/quote-form.js
+          for f in wordpress/inventree-shop/assets/*.js; do node --check "$f"; done
 
   panels:
     runs-on: ubuntu-latest
@@ -55,19 +68,108 @@ jobs:
           npm install --silent react@19 react-dom@19 @mantine/core@9 @mantine/hooks@9 @mantine/notifications@9 jsdom@25
           node "$GITHUB_WORKSPACE/tests/frontend/render_panels.mjs" "$GITHUB_WORKSPACE/inventree_woocommerce/static/shop_panels.js"
 
-  publish:
-    # Push a tag like v0.1.0 to publish. Set up PyPI "trusted publishing" for this repo first
-    # (pypi.org > your project > Publishing > add GitHub, workflow ci.yml, environment pypi).
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, wordpress, panels]
+  # Real InvenTree + this plugin (tests/integration/check_inventree.py), and on 1.6 also a real
+  # WordPress with the inventree-shop plugin talking to it (tests/live/run_live.sh).
+  live:
     runs-on: ubuntu-latest
-    environment: pypi
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - inventree: "1.6.0"
+            wordpress: ""
+          - inventree: "1.5.8"
+            wordpress: "--no-wordpress"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: plugin
+      - uses: actions/checkout@v4
+        with:
+          repository: inventree/InvenTree
+          ref: ${{ matrix.inventree }}
+          path: inventree
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: pdo_sqlite, sqlite3, curl, mbstring
+      - name: Install InvenTree and the plugin
+        run: |
+          pip install -r inventree/src/backend/requirements.txt
+          pip install -e plugin pypdf
+      - name: Live tests
+        run: plugin/tests/live/run_live.sh inventree "$(which python)" "$RUNNER_TEMP/live" ${{ matrix.wordpress }}
+
+  # A release tag: a GitHub release with the changelog notes and the WordPress plugin zip.
+  release:
+    needs: [unit, wordpress, panels, live]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
     permissions:
-      id-token: write
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install build && python -m build
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Build the WordPress zip and the release notes
+        run: |
+          python tools/build_wp_zip.py
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '$0 ~ "^## " v " " {on=1; next} on && /^## / {exit} on {print}' CHANGELOG.md > notes.md
+          cat >> notes.md <<NOTES
+
+          **InvenTree server:** \`sudo inventree-shop-update ${GITHUB_REF_NAME}\` (or pin \`inventree-woocommerce @ git+https://github.com/${GITHUB_REPOSITORY}.git@${GITHUB_REF_NAME}\` in plugins.txt).
+          **Website:** upload \`inventree-shop-${version}.zip\` in WordPress > Plugins > Add New > Upload Plugin.
+          NOTES
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "dist/inventree-shop-${GITHUB_REF_NAME#v}.zip" \
+            --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+
+  # Deploys a release tag to your InvenTree server, only after every test passes.
+  # Off unless you switch it on (docs/RELEASING.md):
+  #   Settings -> Secrets and variables -> Actions
+  #     Variables: SHOP_DEPLOY = true
+  #     Secrets:   INVENTREE_HOST, INVENTREE_SSH_USER, INVENTREE_SSH_KEY (private key),
+  #                INVENTREE_SSH_KNOWN_HOSTS (output of: ssh-keyscan <host>) - recommended
+  #   Settings -> Environments -> inventree-production: add yourself as a required reviewer
+  #   to get an "Approve" button before each deploy (recommended).
+  # The WordPress plugin is not deployed: upload the zip from the release on the website.
+  deploy:
+    needs: [unit, wordpress, panels, live]
+    if: startsWith(github.ref, 'refs/tags/v') && vars.SHOP_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    environment: inventree-production
+    concurrency:
+      group: inventree-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: SSH key
+        env:
+          SSH_KEY: ${{ secrets.INVENTREE_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.INVENTREE_SSH_KNOWN_HOSTS }}
+          HOST: ${{ secrets.INVENTREE_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          if [ -n "$KNOWN_HOSTS" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            echo "::warning::INVENTREE_SSH_KNOWN_HOSTS not set - trusting the server's key on first sight"
+            ssh-keyscan -H "$HOST" > ~/.ssh/known_hosts
+          fi
+      - name: Update the server to ${{ github.ref_name }}
+        env:
+          HOST: ${{ secrets.INVENTREE_HOST }}
+          SSH_USER: ${{ secrets.INVENTREE_SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$SSH_USER@$HOST" \
+            "sudo -n bash -s -- '${GITHUB_REF_NAME}'" < tools/server-update.sh

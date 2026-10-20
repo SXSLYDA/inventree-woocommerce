@@ -3,7 +3,7 @@
  * Plugin Name:       InvenTree Shop
  * Plugin URI:        https://github.com/SXSLYDA/inventree-woocommerce
  * Description:       Companion to the inventree-woocommerce InvenTree plugin. Quote requests with drawings, samples or a call (itemised, accepted online), and a "Charge to my account" payment method for customers InvenTree has approved for credit.
- * Version:           0.4.1
+ * Version:           0.6.0
  * Requires at least: 6.4
  * Requires PHP:      7.4
  * Requires Plugins:  woocommerce
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'INVENTREE_SHOP_VERSION', '0.4.1' );
+define( 'INVENTREE_SHOP_VERSION', '0.6.0' );
 define( 'INVENTREE_SHOP_FILE', __FILE__ );
 
 // User meta written by the InvenTree plugin through the WooCommerce REST API.
