@@ -244,7 +244,8 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
         "CREDIT_LIMIT_PARAMETER": {
             "name": "Credit limit parameter",
             "description": "Company parameter holding the account's credit limit in the shop currency. Blank = "
-                           "no limit. Checked against the value of the company's open Sales Orders.",
+                           "no limit. Checked against what the account owes: open account Sales Orders, plus unpaid "
+                           "Xero invoices when the Xero plugin is installed.",
             "default": "Credit Limit",
         },
         "ACCOUNT_PAYMENT_METHODS": {
@@ -252,6 +253,13 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
             "description": "Comma-separated WooCommerce payment method ids that mean 'charge to account'. "
                            "inventree_account is the companion WordPress plugin's method.",
             "default": "inventree_account",
+        },
+        "CREDIT_INCLUDE_XERO": {
+            "name": "Count unpaid Xero invoices",
+            "description": "With the inventree-xero plugin: credit used includes the customer's outstanding Xero "
+                           "balance (invoiced orders are then counted once, from Xero). No effect without it.",
+            "validator": bool,
+            "default": True,
         },
         "SYNC_ACCOUNTS": {
             "name": "Sync accounts to the shop",

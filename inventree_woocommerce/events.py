@@ -28,8 +28,13 @@ ACCOUNT_TABLES = {"company_company", "company_contact", "order_salesorder"}
 WATCHED_ACTIONS = ("created", "saved")
 
 
+XERO_BALANCES_EVENT = "xero.balances_updated"  # fired by the inventree-xero plugin (company_ids)
+
+
 def wants(event):
     table, _, action = str(event).rpartition(".")
+    if event == XERO_BALANCES_EVENT:
+        return True
     return table in WATCHED_TABLES and action in WATCHED_ACTIONS
 
 
@@ -112,6 +117,13 @@ def handle_event(event, row_id, config=None):
     from .models import ProductLink
 
     config = config or load_config()
+    if event == XERO_BALANCES_EVENT:
+        # Xero balances changed: refresh available credit on the customers' shop logins
+        if config.sync_accounts and config.account_parameter and config.credit_include_xero:
+            from .accounts import queue_account_sync
+
+            queue_account_sync()
+        return
     if config.sync_accounts and config.account_parameter and affects_accounts(event, row_id):
         from .accounts import queue_account_sync
 

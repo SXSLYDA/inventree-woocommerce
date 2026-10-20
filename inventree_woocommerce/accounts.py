@@ -133,17 +133,61 @@ def company_emails(company_ids):
     return found
 
 
-def credit_used(company_id, currency, exclude_sales_order_id=None):
-    """Value of the company's open Sales Orders, in `currency`."""
+XERO_INVOICED = ("AUTHORISED", "PAID")
+
+
+def order_uses_credit(metadata, include_xero=True):
+    """
+    Whether an open Sales Order still counts against the customer's credit.
+
+    - A web order paid online uses no credit.
+    - With the Xero plugin, an order whose Xero invoice is approved (or paid) is
+      already in the customer's Xero balance, so it isn't counted again here.
+    """
+    metadata = metadata or {}
+    woo = metadata.get("woocommerce") or {}
+    if woo and not woo.get("on_account"):
+        return False
+    xero = metadata.get("xero") or {}
+    if include_xero and xero.get("doc_type") == "invoice" and xero.get("status") in XERO_INVOICED:
+        return False
+    return True
+
+
+def xero_outstanding(company):
+    """The customer's unpaid Xero invoices, as stored by the inventree-xero plugin (None = not known)."""
+    balance = ((getattr(company, "metadata", None) or {}).get("xero") or {}).get("balance") or {}
+    if "receivable_outstanding" not in balance:
+        return None
+    try:
+        return Decimal(str(balance["receivable_outstanding"]))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def credit_used(company_id, currency, exclude_sales_order_id=None, include_xero=None):
+    """What the account owes, in `currency`: open account Sales Orders not yet invoiced in Xero, plus the
+    customer's unpaid Xero invoices (when the Xero plugin keeps that balance up to date)."""
+    from company.models import Company
     from djmoney.contrib.exchange.models import convert_money
     from order.models import SalesOrder
     from order.status_codes import SalesOrderStatusGroups
+
+    if include_xero is None:
+        from .config import load_config
+
+        include_xero = load_config().credit_include_xero
+    company = Company.objects.filter(pk=company_id).first()
+    outstanding = xero_outstanding(company) if include_xero and company else None
+    count_xero = outstanding is not None
 
     total = Decimal("0")
     orders = SalesOrder.objects.filter(customer_id=company_id, status__in=SalesOrderStatusGroups.OPEN)
     if exclude_sales_order_id:
         orders = orders.exclude(pk=exclude_sales_order_id)
     for so in orders:
+        if not order_uses_credit(so.metadata, include_xero=count_xero):
+            continue
         price = so.total_price
         if price is None:
             continue
@@ -154,6 +198,8 @@ def credit_used(company_id, currency, exclude_sales_order_id=None):
                 logger.warning("No exchange rate to convert Sales Order %s to %s", so.pk, currency)
                 continue
         total += Decimal(price.amount)
+    if count_xero:
+        total += outstanding
     return total
 
 

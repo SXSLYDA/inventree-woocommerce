@@ -215,9 +215,17 @@ Paid orders arrive with status *processing* and become Sales Orders. Unpaid ones
    stores on each login: approved yes/no, available credit, company name.
 
 At checkout, "Charge to my account" is offered only to logged-in, approved customers whose order fits their
-available credit. Available credit = credit limit − the value of the company's **open** Sales Orders.
-Invoices waiting for payment are in your accounting system, not InvenTree, so either allow for them in the
-limit or close Sales Orders only once they're paid.
+available credit. Available credit = credit limit − what the account owes:
+
+- the value of the company's **open** Sales Orders charged to account or entered by hand (web orders paid
+  online use no credit), and
+- with the [inventree-xero](https://github.com/SXSLYDA/inventree-xero) plugin installed, the customer's **unpaid
+  Xero invoices**. An order whose Xero invoice is approved is then counted once, from Xero, not twice. Credit on
+  shop logins is refreshed whenever the Xero plugin reports new balances (event `xero.balances_updated`).
+  Turn this off with *Count unpaid Xero invoices*.
+
+Without the Xero plugin, invoices waiting for payment aren't visible to InvenTree, so either allow for them in
+the limit or close Sales Orders only once they're paid.
 
 When an account order arrives, the plugin checks again with InvenTree's current data. If the company isn't
 approved (any more) or the order is over the limit, the Sales Order is still created but put **On Hold** with

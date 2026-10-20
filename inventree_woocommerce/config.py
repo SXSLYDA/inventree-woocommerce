@@ -52,6 +52,7 @@ class Config:
     credit_limit_parameter: str = "Credit Limit"
     account_methods: list[str] = field(default_factory=lambda: ["inventree_account"])
     sync_accounts: bool = True
+    credit_include_xero: bool = True
 
     push_shipments: bool = True
 
@@ -133,6 +134,7 @@ def load_config(plugin=None) -> Config:
         credit_limit_parameter=(s("CREDIT_LIMIT_PARAMETER") or "").strip(),
         account_methods=[v.lower() for v in _split(s("ACCOUNT_PAYMENT_METHODS"))],
         sync_accounts=bool(s("SYNC_ACCOUNTS")),
+        credit_include_xero=bool(s("CREDIT_INCLUDE_XERO")),
         push_shipments=bool(s("PUSH_SHIPMENTS")),
         shop_secret=(s("SHOP_SECRET") or "").strip(),
         quote_valid_days=max(int(s("QUOTE_VALID_DAYS") or 30), 1),
