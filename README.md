@@ -148,7 +148,9 @@ Customers must be **logged in** (no anonymous requests). The flow:
    customer still gets their reference straight away.
 2. **Work it** (InvenTree dashboard > **Quote Requests**): mark samples received (the customer is emailed),
    record calls, then price each item with one or more lines - an InvenTree part (search), quantity, unit price
-   ex tax, lead time (defaults to the default lead time) - or mark it **can't supply** with a reason. Build-to-order
+   ex tax, lead time (defaults to the default lead time) - or mark it **can't supply** with a reason. **Add charge**
+   adds a line with no part (labour, freight, a call-out fee): a fee on the WooCommerce order and an extra line on
+   the Sales Order. Build-to-order
    assemblies must be released (BOM validated) before you can send them, same rule as the shop.
 3. **Send**: the quote gets a validity (default 30 days) and the customer is emailed. A part that isn't in the
    shop gets a **hidden, quote-only** WooCommerce product: never shown or buyable in the catalogue, only payable
@@ -180,6 +182,44 @@ nginx `client_max_body_size` on InvenTree, and PHP `upload_max_filesize` / `post
 The website and InvenTree talk to each other with the **Shop link secret** (set the same value on both sides):
 every call is HMAC-signed with a timestamp, and a quote's files are covered by SHA-256 hashes in the signed
 payload, so nothing can be added or changed in transit.
+
+### Pricing in another system (Xero, or your own plugin)
+
+Quotes can be priced somewhere else - an accounting system, an ERP - by any InvenTree plugin that offers itself
+as the **quote pricing provider**. With [inventree-xero](https://github.com/SXSLYDA/inventree-xero) 1.5+ (*Web shop
+quote requests* = *Price and send in Xero*), each request becomes a draft Xero quote; you price it in Xero (parts,
+labour, freight, discounts, your own tax rates) and mark it Sent, and the shop sends the customer **Xero's PDF**.
+The shop does everything else as above: emails, My Account, acceptance, payment, the Sales Order, expiry.
+
+While a provider is active:
+- the Quote Requests window shows **Priced in Xero** with its quote number and a link; adding lines, sending and
+  reopening are done there (samples, calls, notes, can't-supply and declining still work here);
+- customers get the provider's PDF (the InvenTree template is the fallback);
+- customers accept the **whole quote** unless the provider allows line-by-line acceptance.
+
+*Where quotes are priced* = *Always in InvenTree* ignores providers. With no provider installed - or the provider
+not ready (inventree-xero in a dry run or disconnected) - everything works as above.
+
+**Writing a provider.** No import of this plugin is needed; implement any of these on your plugin class
+(full contract in [`providers.py`](inventree_woocommerce/providers.py)):
+
+```python
+def woocommerce_quote_provider(self):          # required: None = not pricing quotes right now
+    return {"name": "MyBooks", "partial_accept": False, "pdf": True}
+
+def woocommerce_quote_info(self, quote):       # optional: shown to staff
+    return {"number": "Q-0042", "status": "Draft", "url": "https://...", "error": ""}
+
+def woocommerce_quote_pdf(self, quote):        # optional: (bytes, file name) or None
+    return pdf_bytes, "Q-0042.pdf"
+```
+
+Then drive the quote through `inventree_woocommerce.quotes.apply_action(quote, data, load_config(),
+source="provider")` - `{"action": "set_lines", "lines": [...]}` (rows with `part_id`, or no `part_id` and a
+`description` for a charge; `quantity`, `unit_price` ex tax, optional `item_id`, `lead_time`), `"send"`
+(optional `valid_days`), `"reopen"`, `"decline"` (with `reason`). Listen for `woocommerce.quote_received` and
+`woocommerce.quote_accepted` (below) to create and close the quote on your side. inventree-xero's `shop_quotes.py`
+is a complete example.
 
 ## Shipments
 

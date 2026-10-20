@@ -673,6 +673,135 @@ assert qbuild.part == custom and qbuild.quantity == 2 and qbuild.target_date == 
 assert qso.attachments.count() == 1
 assert any(e == "woocommerce.quote_accepted" and kw["sales_order"] == qso.pk for e, kw in fired)
 
+# --- labour, freight and other charges (quote lines with no part) ---
+from order.models import SalesOrderExtraLine  # noqa: E402
+
+chg = QuoteRequest.objects.create(reference="QR-CHG-0001", woo_customer_id=77, status="reviewing", name="Bob",
+                                  email="buyer@acme.example", company_name="Acme", currency="AUD")
+chg_item = chg.items.create(position=1, kind="custom", description="Repair a loom", quantity=1)
+
+
+def act_on(q, **data):
+    r = staff_client.post(f"/plugin/woocommerce/quotes/{q.pk}/", data=json.dumps(data),
+                          content_type="application/json", secure=True)
+    return r.status_code, r.json()
+
+
+code, body = act_on(chg, action="set_lines", lines=[{"quantity": 1, "unit_price": "10"}])
+assert code == 400 and "describe the charge" in body["detail"], body
+code, body = act_on(chg, action="set_lines", lines=[
+    {"item_id": chg_item.pk, "part_id": plug.pk, "quantity": 2, "unit_price": "4"},
+    {"item_id": chg_item.pk, "description": "Labour (hours)", "quantity": 3, "unit_price": "95"},
+    {"description": "Freight", "quantity": 1, "unit_price": "25"},
+])
+assert code == 200, body
+code, body = act_on(chg, action="send")
+print("charges quote:", code, body["detail"], body["quote"]["total"], [(l["description"], l["charge"]) for l in body["quote"]["lines"]])
+assert code == 200 and body["quote"]["total"] == "318.00"
+assert [l["charge"] for l in body["quote"]["lines"]] == [False, True, True]
+assert body["quote"]["pricing"] is None, "no pricing plugin: priced in InvenTree"
+pdf_text = "\n".join(p.extract_text() for p in PdfReader(io.BytesIO(
+    staff_client.get(f"/plugin/woocommerce/quotes/{chg.pk}/pdf/", secure=True).content)).pages)
+for expected in ("Labour (hours)", "Freight", "285.00", "Subtotal (ex GST) A$318.00"):
+    assert expected in pdf_text, f"{expected!r} missing from the charges PDF"
+mine = {q["reference"]: q for q in signed_post("/plugin/woocommerce/quotes/customer/", {"customer_id": 77}).json()["quotes"]}
+assert mine["QR-CHG-0001"]["partial_accept"] is True
+lines = {l["description"]: l["id"] for l in mine["QR-CHG-0001"]["lines"]}
+r = signed_post("/plugin/woocommerce/quotes/accept/", {"customer_id": 77, "reference": "QR-CHG-0001",
+                                                       "line_ids": [lines[plug.name], lines["Labour (hours)"]]})
+assert r.status_code == 200, r.json()
+chg_order = [c for c in FakeClient.calls if c.get("post") == "orders"][-1]["data"]
+print("charges order:", chg_order["line_items"][0]["total"], chg_order["fee_lines"])
+assert len(chg_order["line_items"]) == 1 and chg_order["line_items"][0]["total"] == "8.00"
+assert [(f["name"], f["total"]) for f in chg_order["fee_lines"]] == [("Labour (hours) x 3", "285.00")], "freight wasn't ticked"
+chg.refresh_from_db()
+paid = {"id": chg.woo_order_id, "number": str(chg.woo_order_id), "status": "processing", "currency": "AUD",
+        "total": "321.30", "total_tax": "29.30", "payment_method": "stripe", "payment_method_title": "Card",
+        "customer_id": 77, "billing": chg_order["billing"], "shipping": {},
+        "meta_data": [{"key": "inventree_quote", "value": chg.reference}],
+        "line_items": [dict(li, sku="", name="Plug") for li in chg_order["line_items"]],
+        "fee_lines": chg_order["fee_lines"] + [{"name": "Card surcharge", "total": "3.00"}]}
+pb = json.dumps(paid).encode()
+client.post("/plugin/woocommerce/webhook/order/", data=pb, content_type="application/json", secure=True,
+            HTTP_X_WC_WEBHOOK_SIGNATURE=base64.b64encode(hmac.new(b"whsec", pb, hashlib.sha256).digest()).decode(),
+            HTTP_X_WC_WEBHOOK_RESOURCE="order")
+chg_so = SalesOrder.objects.get(pk=WooOrder.objects.get(woo_order_id=chg.woo_order_id).sales_order_id)
+extras = sorted((x.description, float(x.quantity), float(x.price.amount)) for x in SalesOrderExtraLine.objects.filter(order=chg_so))
+print("charges sales order extras:", extras)
+assert extras == [("Fee: Card surcharge", 1.0, 3.0), ("Labour (hours)", 3.0, 95.0)]
+print("quote charges ok")
+
+# --- a pricing plugin (the quote provider contract) ---
+from plugin.registry import registry  # noqa: E402
+
+
+class FakeBooks:
+    """Stands in for inventree-xero: prices quotes elsewhere, supplies its own PDF, whole-quote acceptance."""
+
+    slug = "fakebooks"
+    NAME = "FakeBooks"
+
+    def is_active(self):
+        return True
+
+    def woocommerce_quote_provider(self):
+        return {"name": "FakeBooks", "partial_accept": False}
+
+    def woocommerce_quote_info(self, q):
+        return {"number": "QU-0042", "status": "DRAFT", "url": "https://books.example/q/42"}
+
+    def woocommerce_quote_pdf(self, q):
+        return b"%PDF-1.4 fakebooks " + q.reference.encode(), "QU-0042.pdf"
+
+
+registry.plugins["fakebooks"] = FakeBooks()
+prv = QuoteRequest.objects.create(reference="QR-PRV-0001", woo_customer_id=77, status="reviewing", name="Bob",
+                                  email="buyer@acme.example", currency="AUD")
+prv.items.create(position=1, kind="custom", description="Loom", quantity=1)
+prv.items.create(position=2, kind="component", oem_part_number="DT06", quantity=4)
+detail = staff_client.get(f"/plugin/woocommerce/quotes/{prv.pk}/", secure=True).json()
+print("pricing:", detail["pricing"])
+assert detail["pricing"]["name"] == "FakeBooks" and detail["pricing"]["info"]["number"] == "QU-0042"
+for blocked in ({"action": "set_lines", "lines": []}, {"action": "send"}):
+    code, body = act_on(prv, **blocked)
+    assert code == 400 and "priced in FakeBooks" in body["detail"], body
+code, body = act_on(prv, action="called", item_id=detail["items"][0]["id"], notes="ok")
+assert code == 200, "non-pricing actions still work in the panel"
+
+from inventree_woocommerce.quotes import apply_action  # noqa: E402
+
+apply_action(prv, {"action": "set_lines", "lines": [
+    {"part_id": plug.pk, "quantity": 4, "unit_price": "4.50", "description": "Item 2 plugs"},
+    {"description": "Labour", "quantity": 2, "unit_price": "90"}]}, load_config(), source="provider")
+apply_action(prv, {"action": "send", "valid_days": 14}, load_config(), source="provider")
+prv.refresh_from_db()
+assert prv.status == "quoted" and not prv.items.filter(state="open").exists(), \
+    "the provider's quote covers items it didn't line up"
+assert notifications[-1][0] == "quote_sent" and notifications[-1][1]["partial_accept"] is False
+mine = {q["reference"]: q for q in signed_post("/plugin/woocommerce/quotes/customer/", {"customer_id": 77}).json()["quotes"]}
+assert mine["QR-PRV-0001"]["partial_accept"] is False
+first_line = mine["QR-PRV-0001"]["lines"][0]["id"]
+r = signed_post("/plugin/woocommerce/quotes/accept/", {"customer_id": 77, "reference": "QR-PRV-0001",
+                                                       "line_ids": [first_line]})
+prv_order = [c for c in FakeClient.calls if c.get("post") == "orders"][-1]["data"]
+assert r.status_code == 200 and len(prv_order["line_items"]) == 1 and len(prv_order["fee_lines"]) == 1, \
+    "whole quote accepted even though one line was sent"
+r = signed_post("/plugin/woocommerce/quotes/pdf/", {"customer_id": 77, "reference": "QR-PRV-0001"})
+assert r.content == b"%PDF-1.4 fakebooks QR-PRV-0001" and "QU-0042.pdf" in r["Content-Disposition"]
+r = staff_client.get(f"/plugin/woocommerce/quotes/{prv.pk}/pdf/", secure=True)
+assert r.content.startswith(b"%PDF-1.4 fakebooks"), "staff see the provider's PDF too"
+plugin.set_setting("QUOTE_PRICING", "inventree")
+assert staff_client.get(f"/plugin/woocommerce/quotes/{prv.pk}/", secure=True).json()["pricing"] is None
+code, body = act_on(prv, action="reopen")
+assert code == 200, "QUOTE_PRICING=inventree: staff price here again"
+act_on(prv, action="send")
+del registry.plugins["fakebooks"]  # a bare stand-in can't take part in InvenTree's report printing
+r = signed_post("/plugin/woocommerce/quotes/pdf/", {"customer_id": 77, "reference": "QR-PRV-0001"})
+assert r.status_code == 200 and "Labour" in PdfReader(io.BytesIO(r.content)).pages[0].extract_text(), \
+    "QUOTE_PRICING=inventree: the InvenTree template again"
+plugin.set_setting("QUOTE_PRICING", "auto")
+print("quote provider ok")
+
 # expiry and reminders
 from inventree_woocommerce.quotes import expire_quotes  # noqa: E402
 

@@ -68,6 +68,7 @@ class Config:
     quote_terms: str = ""
     quote_report_template_id: int | None = None
     quote_pdf_to_customer: bool = True
+    quote_pricing: str = "auto"  # auto: a pricing plugin (e.g. Xero) when one is active; inventree: always here
     quote_file_types: list[str] = field(default_factory=lambda: [
         "pdf", "png", "jpg", "jpeg", "gif", "webp", "heic", "dxf", "dwg", "xlsx", "xls", "csv", "docx", "doc", "txt"])
 
@@ -161,6 +162,7 @@ def load_config(plugin=None) -> Config:
         quote_terms=(s("QUOTE_TERMS") or "").replace("\\n", "\n").strip(),
         quote_report_template_id=_int_or_none(s("QUOTE_REPORT_TEMPLATE")),
         quote_pdf_to_customer=bool(s("QUOTE_PDF_TO_CUSTOMER")),
+        quote_pricing="inventree" if s("QUOTE_PRICING") == "inventree" else "auto",
         quote_file_types=[t.lower().lstrip(".") for t in _split(s("QUOTE_FILE_TYPES"))] or Config().quote_file_types,
         build_orders=s("BUILD_ORDERS") or "shortfall",
         build_requires_valid_bom=bool(s("BUILD_REQUIRES_VALID_BOM")),

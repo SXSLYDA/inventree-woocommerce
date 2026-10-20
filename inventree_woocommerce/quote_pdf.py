@@ -8,7 +8,8 @@ first time a PDF is needed the plugin installs its default template
 ("Quote (web shop)") if no quote template exists yet.
 
 Which template is used: the "Quote report template" setting, else the first
-enabled quote template.
+enabled quote template. When a pricing provider (providers.py - e.g. Xero)
+supplies its own PDF, that is used instead and the template is the fallback.
 """
 
 import logging
@@ -43,7 +44,7 @@ def build_context(quote, config):
     items = list(quote.items.all())
     positions = {i.pk: i.position for i in items}
     lines = list(quote.lines.all())
-    parts = Part.objects.in_bulk({line.part_id for line in lines})
+    parts = Part.objects.in_bulk({line.part_id for line in lines if line.part_id})
     currency = quote.currency or config.currency
 
     rows = []
@@ -63,6 +64,7 @@ def build_context(quote, config):
             "unit_price": Money(line.unit_price, currency),
             "total": Money(total, currency),
             "lead_time": line.lead_time,
+            "charge": line.part_id is None,
         })
     tax, total = tax_totals(subtotal, config.quote_tax_rate)
 
@@ -150,3 +152,15 @@ def render_pdf(quote, config, user=None):
     output.output.delete(save=False)
     output.delete()  # one-off download - don't keep it in InvenTree's generated-files list
     return data, name if name.lower().endswith(".pdf") else f"Quote-{quote.reference}.pdf"
+
+
+def quote_pdf(quote, config, user=None):
+    """(pdf bytes, file name): the pricing provider's PDF when it has one, else the InvenTree template's."""
+    from .providers import active_provider
+
+    provider = active_provider(config)
+    if provider is not None:
+        result = provider.pdf_for(quote)
+        if result is not None:
+            return result
+    return render_pdf(quote, config, user=user)

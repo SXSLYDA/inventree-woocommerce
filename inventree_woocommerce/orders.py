@@ -382,7 +382,18 @@ def _create_sales_order(order, config):
             order=sales_order, quantity=1, price=Money(money(ship.get("total")), currency),
             description=clip(f"Shipping: {ship.get('method_title') or 'Shipping'}", 250),
         )
+    from .quotes import quote_charge
+
     for fee in order.get("fee_lines") or []:
+        charge = quote_charge(fee) if quote_reference else None
+        if charge is not None:
+            # Labour, freight... priced on the quote: keep its quantity and unit price
+            SalesOrderExtraLine.objects.create(
+                order=sales_order, quantity=charge.quantity, price=Money(charge.unit_price, currency),
+                description=clip(charge.description or "Charge", 250),
+                notes=clip(f"From quote {quote_reference}", 500),
+            )
+            continue
         SalesOrderExtraLine.objects.create(
             order=sales_order, quantity=1, price=Money(money(fee.get("total")), currency),
             description=clip(f"Fee: {fee.get('name') or 'Fee'}", 250),

@@ -352,6 +352,14 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
             "validator": bool,
             "default": True,
         },
+        "QUOTE_PRICING": {
+            "name": "Where quotes are priced",
+            "description": "Another plugin can own quote pricing (inventree-xero: price and send quotes in Xero, "
+                           "with labour and freight lines and Xero's PDF). InvenTree is used whenever none is active.",
+            "choices": [("auto", "A pricing plugin when one is active, else InvenTree"),
+                        ("inventree", "Always in InvenTree")],
+            "default": "auto",
+        },
         # --- Build Orders ---
         "BUILD_ORDERS": {
             "name": "Build Orders for build-to-order items",

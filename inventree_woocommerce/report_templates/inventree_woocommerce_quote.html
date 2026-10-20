@@ -8,8 +8,8 @@ Edit this in InvenTree: Admin Center > Reports > "Quote (web shop)". Context:
   business_details (multi-line text), terms (multi-line text), customer_notes
   items      - what was asked for: position, kind, description, oem_part_number, machine, quantity,
                state ("quoted" / "cannot"), cannot_reason
-  lines      - priced lines: position, item_position, part (InvenTree Part), part_name, ipn, description,
-               quantity, unit_price, total (Money), lead_time
+  lines      - priced lines: position, item_position, part (InvenTree Part, None for a charge), part_name, ipn, description,
+               quantity, unit_price, total (Money), lead_time, charge (True for labour, freight... with no part)
   subtotal, tax, total (Money), tax_rate (Decimal, %), tax_label ("GST")
 {% endcomment %}
 

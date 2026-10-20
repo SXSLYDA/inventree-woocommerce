@@ -469,11 +469,32 @@ function QuoteDetail({ context, id }) {
       h(M.Group, { justify: 'space-between' },
         h(M.Title, { order: 5 }, 'Quote'),
         q.lines.length ? h(PdfButton, { context, quote: q }) : null),
-      h(QuoteLines, { context, quote: q, editable, busy, act }),
+      q.pricing ? h(PricingNotice, { pricing: q.pricing }) : null,
+      h(QuoteLines, { context, quote: q, editable: editable && !q.pricing, busy, act }),
       h(QuoteActions, { quote: q, busy, act }),
       h(StaffNotes, { quote: q, busy, act }),
     );
   });
+}
+
+// Another plugin (e.g. inventree-xero) prices this quote: say where, and link to it.
+function PricingNotice({ pricing }) {
+  const info = pricing.info || {};
+  return h(
+    M.Alert,
+    { color: info.error ? 'orange' : 'blue', title: `Priced in ${pricing.name}` },
+    h(M.Stack, { gap: 4 },
+      h(M.Text, { size: 'sm' },
+        `Edit the lines and send the quote in ${pricing.name}; the customer gets it from the shop. `
+        + (pricing.partial_accept ? 'Customers can accept some lines.' : 'Customers accept the whole quote.')),
+      info.number || info.status
+        ? h(M.Group, { gap: 'xs' },
+            info.number ? h(M.Text, { size: 'sm', fw: 600 }, info.number) : null,
+            info.status ? h(M.Badge, { variant: 'light' }, info.status) : null,
+            info.url ? h(ExternalLink, { href: info.url }, `Open in ${pricing.name}`) : null)
+        : h(M.Text, { size: 'sm', c: 'dimmed' }, `Not in ${pricing.name} yet.`),
+      info.error ? h(M.Text, { size: 'sm', c: 'orange' }, info.error) : null),
+  );
 }
 
 function PdfButton({ context, quote }) {
@@ -583,7 +604,7 @@ function PartPicker({ context, value, label, onPick }) {
 }
 
 function QuoteLines({ context, quote, editable, busy, act }) {
-  const blank = () => ({ item_id: quote.items[0]?.id || null, part_id: null, part_name: '', description: '', quantity: 1, unit_price: '', lead_time: '' });
+  const blank = (charge) => ({ item_id: charge ? null : quote.items[0]?.id || null, part_id: null, part_name: '', description: '', quantity: 1, unit_price: '', lead_time: '', charge: !!charge });
   const [rows, setRows] = useState(quote.lines.map((l) => ({ ...l })));
   useEffect(() => setRows(quote.lines.map((l) => ({ ...l }))), [quote]);
   const update = (i, patch) => setRows(rows.map((r, n) => (n === i ? { ...r, ...patch } : r)));
@@ -599,7 +620,9 @@ function QuoteLines({ context, quote, editable, busy, act }) {
       h(M.Table.Tbody, null, quote.lines.map((l) =>
         h(M.Table.Tr, { key: l.id },
           h(M.Table.Td, null, itemOptions.find((o) => o.value === String(l.item_id))?.label || ''),
-          h(M.Table.Td, null, h(InternalLink, { context, to: `/part/${l.part_id}/` }, l.part_name)),
+          h(M.Table.Td, null, l.part_id
+            ? h(InternalLink, { context, to: `/part/${l.part_id}/` }, l.part_name)
+            : h(M.Badge, { variant: 'outline', color: 'gray' }, 'Charge')),
           h(M.Table.Td, null, l.description),
           h(M.Table.Td, null, String(l.quantity)),
           h(M.Table.Td, null, l.unit_price),
@@ -615,9 +638,11 @@ function QuoteLines({ context, quote, editable, busy, act }) {
     { gap: 'xs' },
     rows.map((r, i) =>
       h(M.Group, { key: i, gap: 'xs', align: 'flex-end', wrap: 'wrap' },
-        h(M.Select, { size: 'xs', data: itemOptions, value: r.item_id ? String(r.item_id) : null, onChange: (v) => update(i, { item_id: v ? parseInt(v, 10) : null }), w: 100, 'aria-label': 'Item' }),
-        h(PartPicker, { context, value: r.part_id, label: r.part_name, onPick: (pk, name) => update(i, { part_id: pk, part_name: name }) }),
-        h(M.TextInput, { size: 'xs', placeholder: 'Description for the customer (optional)', value: r.description, onChange: (e) => update(i, { description: e.currentTarget.value }), style: { flex: 1, minWidth: 180 } }),
+        h(M.Select, { size: 'xs', data: itemOptions, value: r.item_id ? String(r.item_id) : null, onChange: (v) => update(i, { item_id: v ? parseInt(v, 10) : null }), w: 100, 'aria-label': 'Item', clearable: true }),
+        r.charge
+          ? h(M.Badge, { variant: 'outline', color: 'gray', w: 220 }, 'Charge (no part)')
+          : h(PartPicker, { context, value: r.part_id, label: r.part_name, onPick: (pk, name) => update(i, { part_id: pk, part_name: name }) }),
+        h(M.TextInput, { size: 'xs', placeholder: r.charge ? 'What it is - labour, freight... (required)' : 'Description for the customer (optional)', value: r.description, onChange: (e) => update(i, { description: e.currentTarget.value }), style: { flex: 1, minWidth: 180 } }),
         h(M.NumberInput, { size: 'xs', min: 1, value: r.quantity, onChange: (v) => update(i, { quantity: v }), w: 70, 'aria-label': 'Quantity' }),
         h(M.TextInput, { size: 'xs', placeholder: 'Unit price', value: r.unit_price, onChange: (e) => update(i, { unit_price: e.currentTarget.value }), w: 100 }),
         h(M.TextInput, { size: 'xs', placeholder: 'Lead time (default if blank)', value: r.lead_time, onChange: (e) => update(i, { lead_time: e.currentTarget.value }), w: 170 }),
@@ -626,8 +651,9 @@ function QuoteLines({ context, quote, editable, busy, act }) {
     ),
     h(M.Group, { justify: 'space-between' },
       h(M.Group, { gap: 'xs' },
-        h(M.Button, { size: 'xs', variant: 'light', onClick: () => setRows([...rows, blank()]) }, 'Add line'),
-        h(M.Button, { size: 'xs', loading: busy, onClick: () => act({ action: 'set_lines', lines: rows }) }, 'Save lines')),
+        h(M.Button, { size: 'xs', variant: 'light', onClick: () => setRows([...rows, blank(false)]) }, 'Add line'),
+        h(M.Button, { size: 'xs', variant: 'light', onClick: () => setRows([...rows, blank(true)]) }, 'Add charge (labour, freight)'),
+        h(M.Button, { size: 'xs', loading: busy, onClick: () => act({ action: 'set_lines', lines: rows.map((r) => (r.charge ? { ...r, part_id: null } : r)) }) }, 'Save lines')),
       h(M.Text, { size: 'sm', fw: 600 }, `Total (ex tax): ${total.toFixed(2)} ${quote.currency}`)),
   );
 }
@@ -636,6 +662,7 @@ function QuoteActions({ quote, busy, act }) {
   const [days, setDays] = useState(30);
   const [reason, setReason] = useState('');
   const editable = OPEN_STATUSES.includes(quote.status);
+  const pricedHere = !quote.pricing; // with a pricing plugin, sending and reopening happen there
   if (!editable && quote.status !== 'quoted') return null;
   return h(
     M.Paper,
@@ -646,9 +673,9 @@ function QuoteActions({ quote, busy, act }) {
       editable && quote.status !== 'reviewing'
         ? h(M.Button, { size: 'xs', variant: 'light', loading: busy, onClick: () => act({ action: 'reviewing' }) }, 'Mark reviewing')
         : null,
-      editable ? h(M.NumberInput, { size: 'xs', label: 'Valid for (days)', min: 1, value: days, onChange: setDays, w: 120 }) : null,
-      editable ? h(M.Button, { size: 'xs', color: 'teal', loading: busy, onClick: () => act({ action: 'send', valid_days: days }) }, 'Send quote') : null,
-      quote.status === 'quoted' ? h(M.Button, { size: 'xs', variant: 'light', loading: busy, onClick: () => act({ action: 'reopen' }) }, 'Reopen to change') : null,
+      editable && pricedHere ? h(M.NumberInput, { size: 'xs', label: 'Valid for (days)', min: 1, value: days, onChange: setDays, w: 120 }) : null,
+      editable && pricedHere ? h(M.Button, { size: 'xs', color: 'teal', loading: busy, onClick: () => act({ action: 'send', valid_days: days }) }, 'Send quote') : null,
+      quote.status === 'quoted' && pricedHere ? h(M.Button, { size: 'xs', variant: 'light', loading: busy, onClick: () => act({ action: 'reopen' }) }, 'Reopen to change') : null,
       h(M.TextInput, { size: 'xs', label: 'Decline reason', value: reason, onChange: (e) => setReason(e.currentTarget.value), style: { flex: 1, minWidth: 200 } }),
       h(M.Button, { size: 'xs', color: 'red', variant: 'light', loading: busy, onClick: () => act({ action: 'decline', reason }, 'orange') }, 'Decline'),
     ),

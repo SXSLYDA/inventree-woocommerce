@@ -261,11 +261,12 @@ def _fire(event, **kwargs):
 
 # --- reading --------------------------------------------------------------------------------
 
-def serialize(quote, staff=False):
+def serialize(quote, staff=False, provider=None):
+    """Quote as JSON. provider: the active pricing provider (providers.active_provider), if any."""
     from part.models import Part
 
     lines = list(quote.lines.all())
-    parts = Part.objects.in_bulk({line.part_id for line in lines})
+    parts = Part.objects.in_bulk({line.part_id for line in lines if line.part_id})
     files = list(quote.files.all())
 
     def line_data(line):
@@ -276,8 +277,10 @@ def serialize(quote, staff=False):
             "quantity": line.quantity, "unit_price": str(line.unit_price), "total": str(total),
             "lead_time": line.lead_time, "accepted": line.accepted,
         }
+        row["charge"] = line.part_id is None  # labour, freight... (no part)
         if staff:
-            row.update({"part_id": line.part_id, "part_name": part.name if part else "(deleted part)",
+            missing = "(deleted part)" if line.part_id else ""
+            row.update({"part_id": line.part_id, "part_name": part.name if part else missing,
                         "part_ipn": (part.IPN or "") if part else ""})
         return row
 
@@ -312,6 +315,7 @@ def serialize(quote, staff=False):
         "total": str(sum((line.unit_price * line.quantity for line in lines), Decimal("0")).quantize(Decimal("0.01"))),
         "can_accept": quote.status == "quoted" and (quote.valid_until is None or quote.valid_until >= date.today()),
         "has_pdf": quote.status in ("quoted", "accepted", "expired"),
+        "partial_accept": provider.partial_accept if provider else True,
     }
     if staff:
         data.update({
@@ -319,6 +323,7 @@ def serialize(quote, staff=False):
             "company_name": quote.company_name, "company_id": quote.company_id, "staff_notes": quote.staff_notes,
             "woo_customer_id": quote.woo_customer_id, "woo_order_id": quote.woo_order_id,
             "sales_order_id": quote.sales_order_id,
+            "pricing": provider.as_dict(quote) if provider else None,
         })
     if not staff and quote.status not in ("quoted", "accepted", "expired"):
         data["lines"] = []
@@ -326,21 +331,35 @@ def serialize(quote, staff=False):
     return data
 
 
-def customer_quotes(customer_id):
+def customer_quotes(customer_id, config):
     from .models import QuoteRequest
+    from .providers import active_provider
 
-    return [serialize(q) for q in QuoteRequest.objects.filter(woo_customer_id=customer_id)
+    provider = active_provider(config)
+    return [serialize(q, provider=provider) for q in QuoteRequest.objects.filter(woo_customer_id=customer_id)
             .prefetch_related("items", "lines", "files")[:100]]
 
 
 # --- staff actions ----------------------------------------------------------------------------
 
-def apply_action(quote, data, config):
-    """One staff action on a quote. Returns a message; raises QuoteError for anything the user must fix."""
+PRICING_ACTIONS = ("set_lines", "send", "reopen")
+
+
+def apply_action(quote, data, config, source="staff"):
+    """One action on a quote. Returns a message; raises QuoteError for anything the user must fix.
+
+    source: "staff" (the InvenTree panel) or "provider" (a pricing plugin - see providers.py). While a
+    provider is active, staff can't price, send or reopen quotes here: that happens in the provider.
+    """
     from .models import QuoteRequest
+    from .providers import active_provider
 
     S = QuoteRequest.Status
     action = data.get("action")
+    provider = active_provider(config) if source == "staff" else None
+    if provider is not None and action in PRICING_ACTIONS:
+        raise QuoteError(f"Quotes are priced in {provider.name} - make this change there.")
+    priced_elsewhere = source == "provider" or provider is not None
     item = quote.items.filter(pk=_int(data.get("item_id"))).first() if data.get("item_id") else None
 
     if action == "notes":
@@ -376,6 +395,9 @@ def apply_action(quote, data, config):
             raise QuoteError("Say why it can't be supplied - the customer sees this.")
         item.state, item.cannot_reason = item.State.CANNOT, reason
         item.save(update_fields=["state", "cannot_reason"])
+        if priced_elsewhere:
+            return (f"Item {item.position} marked can't supply - remove its lines in "
+                    f"{provider.name if provider else 'the pricing system'} too.")
         quote.lines.filter(item=item).delete()
         return f"Item {item.position} marked can't supply."
 
@@ -397,7 +419,8 @@ def apply_action(quote, data, config):
 
     if action == "send":
         _require_open(quote)
-        return send_quote(quote, config, _int(data.get("valid_days")) or config.quote_valid_days)
+        return send_quote(quote, config, _int(data.get("valid_days")) or config.quote_valid_days,
+                          every_item=source != "provider")
 
     if action == "reopen":
         if quote.status != S.QUOTED:
@@ -446,11 +469,16 @@ def set_lines(quote, rows):
     items = {i.pk: i for i in quote.items.all()}
     cleaned = []
     for n, row in enumerate(rows, start=1):
-        part = Part.objects.filter(pk=_int(row.get("part_id"))).first()
-        if part is None:
-            raise QuoteError(f"Line {n}: pick a part.")
-        if not part.salable:
-            raise QuoteError(f"Line {n}: {part.name} isn't marked Salable (Sales Orders need salable parts).")
+        description = _text(row.get("description"), 250)
+        part = None
+        if row.get("part_id"):
+            part = Part.objects.filter(pk=_int(row.get("part_id"))).first()
+            if part is None:
+                raise QuoteError(f"Line {n}: that part doesn't exist.")
+            if not part.salable:
+                raise QuoteError(f"Line {n}: {part.name} isn't marked Salable (Sales Orders need salable parts).")
+        elif not description:
+            raise QuoteError(f"Line {n}: pick a part, or describe the charge (labour, freight...).")
         qty = _int(row.get("quantity"))
         if qty < 1:
             raise QuoteError(f"Line {n}: quantity must be at least 1.")
@@ -460,8 +488,8 @@ def set_lines(quote, rows):
         item_id = _int(row.get("item_id")) or None
         if item_id and item_id not in items:
             raise QuoteError(f"Line {n}: that item isn't on this quote.")
-        cleaned.append(QuoteLine(request=quote, item_id=item_id, position=n, part_id=part.pk, quantity=qty,
-                                 unit_price=price, description=_text(row.get("description"), 250),
+        cleaned.append(QuoteLine(request=quote, item_id=item_id, position=n, part_id=part.pk if part else None,
+                                 quantity=qty, unit_price=price, description=description,
                                  lead_time=_text(row.get("lead_time"), 60)))
     with transaction.atomic():
         quote.lines.all().delete()
@@ -475,7 +503,9 @@ def set_lines(quote, rows):
                     item.save(update_fields=["state"])
 
 
-def send_quote(quote, config, valid_days):
+def send_quote(quote, config, valid_days, every_item=True):
+    """Send the quote to the customer. every_item: each requested item must be priced or marked can't supply
+    (a pricing provider's quote is complete as it stands, so items it didn't line up are simply covered by it)."""
     from part.models import Part
 
     from .catalog import BUILD, release_blocker
@@ -485,10 +515,15 @@ def send_quote(quote, config, valid_days):
     if not lines:
         raise QuoteError("Add at least one priced line first.")
     for item in quote.items.all():
-        if item.state == item.State.OPEN:
+        if item.state != item.State.OPEN:
+            continue
+        if every_item:
             raise QuoteError(f"Item {item.position} has no lines - price it or mark it can't supply.")
-    parts = Part.objects.in_bulk({line.part_id for line in lines})
-    for line in lines:
+        item.state = item.State.QUOTED
+        item.save(update_fields=["state"])
+    part_lines = [line for line in lines if line.part_id]
+    parts = Part.objects.in_bulk({line.part_id for line in part_lines})
+    for line in part_lines:
         part = parts.get(line.part_id)
         if part is None or not part.salable:
             raise QuoteError(f"Line {line.position}: the part is missing or no longer salable.")
@@ -497,9 +532,9 @@ def send_quote(quote, config, valid_days):
             raise QuoteError(f"{part.name}: {blocker}. Release the design before quoting it.")
 
     for part in parts.values():
-        ensure_product(part, next(line.unit_price for line in lines if line.part_id == part.pk), config)
+        ensure_product(part, next(line.unit_price for line in part_lines if line.part_id == part.pk), config)
 
-    for line in lines:
+    for line in part_lines:
         if not line.lead_time and parts[line.part_id].assembly and config.default_lead_time:
             line.lead_time = config.default_lead_time
             line.save(update_fields=["lead_time"])
@@ -509,9 +544,12 @@ def send_quote(quote, config, valid_days):
     quote.valid_until = date.today() + timedelta(days=max(valid_days, 1))
     quote.expiry_reminded = False
     quote.save()
+    from .providers import active_provider
     from .shop_link import notify_shop
 
-    notify_shop("quote_sent", _notice(quote, total=serialize(quote)["total"], pdf=config.quote_pdf_to_customer))
+    provider = active_provider(config)
+    notify_shop("quote_sent", _notice(quote, total=serialize(quote)["total"], pdf=config.quote_pdf_to_customer,
+                                      partial_accept=provider.partial_accept if provider else True))
     return f"Quote sent - valid until {quote.valid_until:%d %b %Y}."
 
 
@@ -587,13 +625,23 @@ def accept(customer_id, reference, line_ids, config):
         raise QuoteError(f"This quote is {quote.get_status_display().lower()} and can't be accepted.")
     if quote.valid_until and quote.valid_until < date.today():
         raise QuoteError("This quote has expired - ask us for an updated one.")
-    wanted = {_int(i) for i in line_ids or []}
-    lines = [line for line in quote.lines.all() if line.pk in wanted]
+    from .providers import active_provider
+
+    provider = active_provider(config)
+    if provider is not None and not provider.partial_accept:
+        lines = list(quote.lines.all())  # whole quote only
+    else:
+        wanted = {_int(i) for i in line_ids or []}
+        lines = [line for line in quote.lines.all() if line.pk in wanted]
     if not lines:
         raise QuoteError("Tick at least one line to accept.")
+    part_lines = [line for line in lines if line.part_id]
+    charges = [line for line in lines if not line.part_id]
 
     products = {link.part_id: link.woo_product_id
-                for link in ProductLink.objects.filter(part_id__in=[line.part_id for line in lines])}
+                for link in ProductLink.objects.filter(part_id__in=[line.part_id for line in part_lines])}
+    if any(not products.get(line.part_id) for line in part_lines):
+        raise QuoteError("This quote needs updating before it can be accepted - please contact us.")
     client = WooClient.from_config(config)
     customer = client.get(f"customers/{customer_id}")
 
@@ -613,7 +661,14 @@ def accept(customer_id, reference, line_ids, config):
             "subtotal": str((line.unit_price * line.quantity).quantize(Decimal("0.01"))),
             "total": str((line.unit_price * line.quantity).quantize(Decimal("0.01"))),
             "meta_data": [{"key": "inventree_quote_line", "value": str(line.pk)}],
-        } for line in lines],
+        } for line in part_lines],
+        # Labour, freight and other part-less charges: WooCommerce fees, Sales Order extra lines in InvenTree
+        "fee_lines": [{
+            "name": charge_name(line),
+            "total": str((line.unit_price * line.quantity).quantize(Decimal("0.01"))),
+            "tax_status": "taxable",
+            "meta_data": [{"key": "inventree_quote_line", "value": str(line.pk)}],
+        } for line in charges],
     })
     quote.lines.update(accepted=False)
     quote.lines.filter(pk__in=[line.pk for line in lines]).update(accepted=True)
@@ -622,7 +677,22 @@ def accept(customer_id, reference, line_ids, config):
     return order.get("payment_url") or ""
 
 
+def charge_name(line):
+    name = line.description or "Charge"
+    return f"{name} x {line.quantity}"[:200] if line.quantity != 1 else name[:200]
+
+
 # --- when the quote's order is paid -------------------------------------------------------------
+
+def quote_charge(fee_line):
+    """The QuoteLine behind a WooCommerce fee line from an accepted quote (None for other fees)."""
+    from .models import QuoteLine
+
+    for meta in fee_line.get("meta_data") or []:
+        if meta.get("key") == "inventree_quote_line":
+            return QuoteLine.objects.filter(pk=_int(meta.get("value")), part_id__isnull=True).first()
+    return None
+
 
 def quote_line_lead_times(order_payload):
     """{part_id: lead time} from the quote lines on a WooCommerce order (empty if not a quote order)."""
@@ -633,7 +703,8 @@ def quote_line_lead_times(order_payload):
         for meta in li.get("meta_data") or []:
             if meta.get("key") == "inventree_quote_line":
                 ids.append(_int(meta.get("value")))
-    return {line.part_id: line.lead_time for line in QuoteLine.objects.filter(pk__in=ids) if line.lead_time}
+    return {line.part_id: line.lead_time
+            for line in QuoteLine.objects.filter(pk__in=ids, part_id__isnull=False) if line.lead_time}
 
 
 def on_order_created(order_payload, sales_order):

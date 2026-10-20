@@ -126,11 +126,22 @@ check( 'detail page: items, sample status, label button, working message', false
 $render = new ReflectionMethod( 'InvenTree_Shop_Quotes', 'render_detail' );
 $render->setAccessible( true );
 ob_start();
-$render->invoke( null, array( 'reference' => 'QR-FIX-0001', 'status' => 'quoted', 'status_label' => 'Quoted', 'valid_until' => '2026-11-18', 'decline_reason' => '', 'currency' => 'AUD', 'can_accept' => true, 'total' => '2942.10',
+$render->invoke( null, array( 'reference' => 'QR-FIX-0001', 'status' => 'quoted', 'status_label' => 'Quoted', 'valid_until' => '2026-11-18', 'decline_reason' => '', 'currency' => 'AUD', 'can_accept' => true, 'partial_accept' => true, 'total' => '2942.10',
 	'items' => array( array( 'quantity' => 2, 'kind_label' => 'Custom harness', 'description' => 'Loom', 'oem_part_number' => '', 'sending_sample' => false, 'sample_received' => false, 'wants_call' => false, 'called' => false, 'state' => 'quoted', 'cannot_reason' => '' ) ),
 	'lines' => array( array( 'id' => 7, 'description' => 'Engine loom', 'quantity' => 2, 'unit_price' => '1450.00', 'total' => '2900.00', 'lead_time' => '6 weeks' ) ) ) );
 $quoted = ob_get_clean();
 check( 'quoted page: tick-box per line, totals ex GST, lead time, accept button', false !== strpos( $quoted, 'name="line_ids[]" value="7"' ) && false !== strpos( $quoted, 'Total (ex GST)' ) && false !== strpos( $quoted, '6 weeks' ) && false !== strpos( $quoted, 'Accept and continue to payment' ) );
+
+// priced in a pricing plugin that takes whole quotes only (e.g. Xero): no tick-boxes, every line goes with the form
+ob_start();
+$render->invoke( null, array( 'reference' => 'QR-FIX-0003', 'status' => 'quoted', 'status_label' => 'Quoted', 'valid_until' => '2026-11-18', 'decline_reason' => '', 'currency' => 'AUD', 'can_accept' => true, 'partial_accept' => false, 'total' => '290.00',
+	'items' => array(), 'lines' => array(
+		array( 'id' => 8, 'description' => 'Engine loom', 'quantity' => 1, 'unit_price' => '200.00', 'total' => '200.00', 'lead_time' => '6 weeks', 'charge' => false ),
+		array( 'id' => 9, 'description' => 'Labour', 'quantity' => 1, 'unit_price' => '90.00', 'total' => '90.00', 'lead_time' => '', 'charge' => true ) ) ) );
+$whole = ob_get_clean();
+check( 'whole-quote page: no tick-boxes, all lines sent, says so', false === strpos( $whole, 'type="checkbox"' ) && false !== strpos( $whole, 'type="hidden" name="line_ids[]" value="8"' ) && false !== strpos( $whole, 'type="hidden" name="line_ids[]" value="9"' ) && false !== strpos( $whole, 'Accepting takes the whole quote' ) && false !== strpos( $whole, 'Labour' ) );
+$msg = InvenTree_Shop_Notify::message( array( 'event' => 'quote_sent', 'reference' => 'QR-FIX-0003', 'valid_until' => '2026-11-18', 'partial_accept' => false ) );
+check( 'whole-quote email doesn\'t offer accepting part of it', false === strpos( $msg[2], 'all or part' ) && false !== strpos( $msg[2], 'You can accept it online' ) );
 
 // accepting a quote that isn't priced yet is refused by InvenTree, shown to the customer
 $_SERVER['REQUEST_METHOD'] = 'POST';

@@ -280,12 +280,13 @@ class QuoteFile(models.Model):
 
 
 class QuoteLine(models.Model):
-    """A priced line on the quote: an InvenTree part, quantity and unit price (ex tax)."""
+    """A priced line on the quote (ex tax): an InvenTree part, or - with no part - labour, freight or another charge."""
 
     request = models.ForeignKey(QuoteRequest, on_delete=models.CASCADE, related_name="lines")
     item = models.ForeignKey(QuoteItem, on_delete=models.SET_NULL, null=True, blank=True, related_name="lines")
     position = models.PositiveSmallIntegerField(default=1)
-    part_id = models.PositiveIntegerField(help_text="InvenTree Part id")
+    part_id = models.PositiveIntegerField(null=True, blank=True,
+                                          help_text="InvenTree Part id (blank: labour, freight or another charge)")
     description = models.CharField(max_length=250, blank=True, help_text="Shown to the customer")
     quantity = models.PositiveIntegerField(default=1)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)

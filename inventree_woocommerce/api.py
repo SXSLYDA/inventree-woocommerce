@@ -348,7 +348,7 @@ def quote_customer_list(request):
     customer_id = _int(data.get("customer_id"))
     if customer_id <= 0:
         return _json(400, {"detail": "customer_id required"})
-    return _json(200, {"quotes": customer_quotes(customer_id)})
+    return _json(200, {"quotes": customer_quotes(customer_id, config)})
 
 
 def quote_accept(request):
@@ -405,33 +405,38 @@ class QuoteDetailView(APIView):
         return QuoteRequest.objects.filter(pk=pk).first()
 
     def get(self, request, pk):
+        from .config import load_config
+        from .providers import active_provider
         from .quotes import serialize
 
         quote = self._quote(pk)
         if quote is None:
             return Response({"detail": "Not found."}, status=404)
-        return Response(serialize(quote, staff=True))
+        return Response(serialize(quote, staff=True, provider=active_provider(load_config())))
 
     def post(self, request, pk):
         from .config import load_config
+        from .providers import active_provider
         from .quotes import QuoteError, apply_action, serialize
         from .woo_client import WooError
 
         quote = self._quote(pk)
         if quote is None:
             return Response({"detail": "Not found."}, status=404)
+        config = load_config()
         try:
-            message = apply_action(quote, request.data, load_config())
+            message = apply_action(quote, request.data, config, source="staff")
         except QuoteError as exc:
             return Response({"detail": str(exc)}, status=400)
         except WooError as exc:
             return Response({"detail": f"WooCommerce: {exc}"}, status=502)
         quote.refresh_from_db()
-        return Response({"detail": message, "quote": serialize(quote, staff=True)})
+        return Response({"detail": message,
+                         "quote": serialize(quote, staff=True, provider=active_provider(config))})
 
 
 class QuotePdfView(APIView):
-    """Staff: the quote as a PDF (draft until it's sent)."""
+    """Staff: the quote as a PDF - the pricing provider's when it has one, else InvenTree's (draft until sent)."""
 
     permission_classes = [IsAdminUser]
 
@@ -440,13 +445,13 @@ class QuotePdfView(APIView):
 
         from .config import load_config
         from .models import QuoteRequest
-        from .quote_pdf import QuotePdfError, render_pdf
+        from .quote_pdf import QuotePdfError, quote_pdf
 
         quote = QuoteRequest.objects.filter(pk=pk).first()
         if quote is None:
             return Response({"detail": "Not found."}, status=404)
         try:
-            data, name = render_pdf(quote, load_config(), user=request.user)
+            data, name = quote_pdf(quote, load_config(), user=request.user)
         except QuotePdfError as exc:
             return Response({"detail": str(exc)}, status=400)
         response = HttpResponse(data, content_type="application/pdf")
@@ -459,7 +464,7 @@ def quote_customer_pdf(request):
     from django.http import HttpResponse
 
     from .models import QuoteRequest
-    from .quote_pdf import CUSTOMER_STATUSES, QuotePdfError, render_pdf
+    from .quote_pdf import CUSTOMER_STATUSES, QuotePdfError, quote_pdf
     from .quotes import _int
 
     config, data = _signed_json(request)
@@ -472,7 +477,7 @@ def quote_customer_pdf(request):
     if quote is None or quote.status not in CUSTOMER_STATUSES:
         return _json(404, {"detail": "Quote not found."})
     try:
-        pdf, name = render_pdf(quote, config)
+        pdf, name = quote_pdf(quote, config)
     except QuotePdfError as exc:
         return _json(502, {"detail": str(exc)})
     response = HttpResponse(pdf, content_type="application/pdf")

@@ -231,6 +231,34 @@ await act(async () => { pdfBtn.click(); await new Promise((r) => setTimeout(r, 5
 check('quotes: PDF fetched as a file and opened', pdfRequests.some((c) => c && c.responseType === 'blob') && openedUrls.includes('blob:quote-pdf'));
 check('quotes: send and decline actions available', [...document.body.querySelectorAll('button')].some((b) => b.textContent === 'Send quote') && page().includes('Decline reason'));
 
+// a charge line (labour, freight): no part, description required
+const typeInto = async (input, text) => act(async () => {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  setter.call(input, text);
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 20));
+});
+const buttons = () => [...document.body.querySelectorAll('button')];
+const chargeBtn = buttons().find((b) => b.textContent === 'Add charge (labour, freight)');
+await act(async () => { chargeBtn.click(); await new Promise((r) => setTimeout(r, 20)); });
+check('quotes: a charge line has no part picker', page().includes('Charge (no part)'));
+await typeInto([...document.body.querySelectorAll('input')].find((i) => i.placeholder.startsWith('What it is')), 'Freight');
+await typeInto([...document.body.querySelectorAll('input')].filter((i) => i.placeholder === 'Unit price').pop(), '25');
+await act(async () => { buttons().find((b) => b.textContent === 'Save lines').click(); await new Promise((r) => setTimeout(r, 50)); });
+const savedCharge = postedBodies.filter((b) => b && b.action === 'set_lines').pop();
+check('quotes: charge saved without a part', !!savedCharge && savedCharge.lines.length === 2 && savedCharge.lines[1].part_id === null
+  && savedCharge.lines[1].description === 'Freight' && savedCharge.lines[1].unit_price === '25');
+
+// priced in another plugin (e.g. Xero): say where, lock pricing here
+quoteDetail.pricing = { name: 'Xero', partial_accept: false, slug: 'inventree-xero',
+  info: { number: 'QU-0042', status: 'DRAFT', url: 'https://go.xero.com/q/42', error: '' } };
+await act(async () => { buttons().find((b) => b.textContent === 'Save notes').click(); await new Promise((r) => setTimeout(r, 50)); });
+check('quotes: priced-in notice with the provider\'s number and link', page().includes('Priced in Xero') && page().includes('QU-0042')
+  && [...document.body.querySelectorAll('a')].some((a) => a.href === 'https://go.xero.com/q/42'));
+check('quotes: no line editing, sending or reopening while priced elsewhere',
+  !buttons().some((b) => ['Save lines', 'Send quote', 'Add line', 'Reopen to change'].includes(b.textContent)));
+check('quotes: samples, calls and declining still available', page().includes('Decline reason') && buttons().some((b) => b.textContent === 'Record call'));
+
 const reactErrors = errors.filter((e) => !e.includes('Not implemented: window.computedStyle') && !e.includes('Could not parse CSS'));
 console.error = origError;
 check('no React errors or warnings', reactErrors.length === 0);

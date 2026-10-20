@@ -47,7 +47,7 @@ class InvenTree_Shop_Notify {
 					__( 'Your quote is ready', 'inventree-shop' ),
 					'<p>' . esc_html( sprintf( /* translators: %s: reference */ __( 'Your quote %s is ready.', 'inventree-shop' ), $ref ) ) . '</p>'
 						. ( $total ? '<p>' . esc_html__( 'Total (ex GST):', 'inventree-shop' ) . ' ' . wp_kses_post( $total ) . '</p>' : '' )
-						. ( $until ? '<p>' . esc_html( sprintf( /* translators: %s: date */ __( 'Valid until %s. You can accept all or part of it online.', 'inventree-shop' ), $until ) ) . '</p>' : '' )
+						. ( $until ? '<p>' . esc_html( sprintf( /* translators: %s: date */ ( isset( $data['partial_accept'] ) && ! $data['partial_accept'] ) ? __( 'Valid until %s. You can accept it online.', 'inventree-shop' ) : __( 'Valid until %s. You can accept all or part of it online.', 'inventree-shop' ), $until ) ) . '</p>' : '' )
 						. ( ! empty( $data['pdf'] ) ? '<p>' . esc_html__( 'The quote is attached as a PDF.', 'inventree-shop' ) . '</p>' : '' )
 						. $link . $call,
 				);

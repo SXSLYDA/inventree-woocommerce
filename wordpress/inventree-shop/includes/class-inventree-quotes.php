@@ -666,24 +666,31 @@ class InvenTree_Shop_Quotes {
 		echo '<form method="post" class="inventree-quote-accept">';
 		wp_nonce_field( 'inventree_quote_accept_' . $q['reference'], 'inventree_quote_nonce' );
 		echo '<input type="hidden" name="inventree_action" value="quote_accept"><input type="hidden" name="reference" value="' . esc_attr( $q['reference'] ) . '">';
+		// Line by line, unless quotes are priced somewhere that only takes the whole quote (e.g. Xero).
+		$pick = $q['can_accept'] && ! empty( $q['partial_accept'] );
 		echo '<table class="shop_table inventree-quote-lines"><thead><tr>';
-		echo $q['can_accept'] ? '<th>' . esc_html__( 'Accept', 'inventree-shop' ) . '</th>' : '';
+		echo $pick ? '<th>' . esc_html__( 'Accept', 'inventree-shop' ) . '</th>' : '';
 		foreach ( array( __( 'Item', 'inventree-shop' ), __( 'Qty', 'inventree-shop' ), __( 'Unit (ex GST)', 'inventree-shop' ), __( 'Total (ex GST)', 'inventree-shop' ), __( 'Lead time', 'inventree-shop' ) ) as $h ) {
 			echo '<th>' . esc_html( $h ) . '</th>';
 		}
 		echo '</tr></thead><tbody>';
 		foreach ( $q['lines'] as $line ) {
 			echo '<tr>';
-			if ( $q['can_accept'] ) {
+			if ( $pick ) {
 				echo '<td><input type="checkbox" name="line_ids[]" value="' . esc_attr( $line['id'] ) . '" checked aria-label="' . esc_attr__( 'Accept this line', 'inventree-shop' ) . '"></td>';
+			} elseif ( $q['can_accept'] ) {
+				echo '<input type="hidden" name="line_ids[]" value="' . esc_attr( $line['id'] ) . '">';
 			}
 			echo '<td>' . esc_html( $line['description'] ) . '</td><td>' . esc_html( $line['quantity'] ) . '</td>';
 			echo '<td>' . wp_kses_post( self::money( $line['unit_price'], $q['currency'] ) ) . '</td><td>' . wp_kses_post( self::money( $line['total'], $q['currency'] ) ) . '</td>';
 			echo '<td>' . esc_html( $line['lead_time'] ) . '</td></tr>';
 		}
-		echo '</tbody><tfoot><tr><th colspan="' . ( $q['can_accept'] ? 4 : 3 ) . '">' . esc_html__( 'Total (ex GST)', 'inventree-shop' ) . '</th><td colspan="2">' . wp_kses_post( self::money( $q['total'], $q['currency'] ) ) . '</td></tr></tfoot></table>';
+		echo '</tbody><tfoot><tr><th colspan="' . ( $pick ? 4 : 3 ) . '">' . esc_html__( 'Total (ex GST)', 'inventree-shop' ) . '</th><td colspan="2">' . wp_kses_post( self::money( $q['total'], $q['currency'] ) ) . '</td></tr></tfoot></table>';
 		if ( $q['can_accept'] ) {
-			echo '<p class="inventree-muted">' . esc_html__( 'Untick anything you don\'t want. GST and delivery are added at checkout. Trade account customers can choose "Charge to my account".', 'inventree-shop' ) . '</p>';
+			$hint = $pick
+				? __( 'Untick anything you don\'t want. GST and delivery are added at checkout. Trade account customers can choose "Charge to my account".', 'inventree-shop' )
+				: __( 'Accepting takes the whole quote - call us if you\'d like it changed. GST is added at checkout. Trade account customers can choose "Charge to my account".', 'inventree-shop' );
+			echo '<p class="inventree-muted">' . esc_html( $hint ) . '</p>';
 			echo '<p><button type="submit" class="button alt">' . esc_html__( 'Accept and continue to payment', 'inventree-shop' ) . '</button></p>';
 		}
 		echo '</form>';
