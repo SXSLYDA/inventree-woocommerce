@@ -445,12 +445,12 @@ class InvenTree_Shop_Quotes {
 		return $email ? $email : get_option( 'admin_email' );
 	}
 
-	public static function send_email( $to, $subject, $heading, $html ) {
+	public static function send_email( $to, $subject, $heading, $html, array $attachments = array() ) {
 		if ( function_exists( 'WC' ) && WC()->mailer() ) {
 			$mailer = WC()->mailer();
-			return $mailer->send( $to, $subject, $mailer->wrap_message( $heading, $html ) );
+			return $mailer->send( $to, $subject, $mailer->wrap_message( $heading, $html ), '', $attachments );
 		}
-		return wp_mail( $to, $subject, wp_strip_all_tags( $html ) );
+		return wp_mail( $to, $subject, wp_strip_all_tags( $html ), '', $attachments );
 	}
 
 	private static function send_received_emails( array $payload, $queued ) {
@@ -628,6 +628,9 @@ class InvenTree_Shop_Quotes {
 			echo '<div class="woocommerce-info">' . esc_html( $q['decline_reason'] ) . '</div>';
 		}
 		self::render_label_link( $q['reference'], $q['items'] );
+		if ( ! empty( $q['has_pdf'] ) ) {
+			echo '<p><a class="button" href="' . esc_url( self::account_url( $q['reference'] . '/pdf' ) ) . '">' . esc_html__( 'Download quote (PDF)', 'inventree-shop' ) . '</a></p>';
+		}
 
 		echo '<h3>' . esc_html__( 'What you asked for', 'inventree-shop' ) . '</h3><ol class="inventree-quote-request-items">';
 		foreach ( $q['items'] as $item ) {
@@ -714,6 +717,10 @@ class InvenTree_Shop_Quotes {
 			return;
 		}
 		$value = trim( (string) $wp->query_vars[ self::ENDPOINT ], '/' );
+		if ( preg_match( '#^(QR-[A-Z0-9-]+)/pdf$#i', $value, $pdf ) ) {
+			self::send_pdf( strtoupper( $pdf[1] ) );
+			return;
+		}
 		if ( ! preg_match( '#^(QR-[A-Z0-9-]+)/label$#i', $value, $m ) ) {
 			return;
 		}
@@ -734,6 +741,21 @@ class InvenTree_Shop_Quotes {
 			wp_die( esc_html__( 'Quote not found.', 'inventree-shop' ), '', array( 'response' => 404 ) );
 		}
 		echo self::label_html( $quote, self::customer( get_current_user_id() ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside
+		exit;
+	}
+
+	/** Stream a sent quote's PDF to its owner (InvenTree checks the quote belongs to this customer). */
+	private static function send_pdf( $reference ) {
+		$data = InvenTree_Link::quote_pdf( get_current_user_id(), $reference );
+		if ( is_wp_error( $data ) ) {
+			wp_die( esc_html( $data->get_error_message() ), '', array( 'response' => 404 ) );
+		}
+		nocache_headers();
+		header( 'Content-Type: application/pdf' );
+		header( 'Content-Disposition: attachment; filename="Quote-' . sanitize_file_name( $reference ) . '.pdf"' );
+		header( 'Content-Length: ' . strlen( $data ) );
+		header( 'X-Content-Type-Options: nosniff' );
+		echo $data; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- binary PDF
 		exit;
 	}
 

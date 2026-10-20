@@ -7,6 +7,7 @@ order logic testable without a running InvenTree.
 """
 
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 
 PLUGIN_SLUG = "woocommerce"
 
@@ -61,6 +62,12 @@ class Config:
     quote_remind_days: int = 3
     quote_max_file_mb: int = 20
     quote_max_files: int = 20
+    quote_tax_rate: Decimal = Decimal("10")
+    quote_tax_label: str = "GST"
+    quote_business_details: str = ""
+    quote_terms: str = ""
+    quote_report_template_id: int | None = None
+    quote_pdf_to_customer: bool = True
     quote_file_types: list[str] = field(default_factory=lambda: [
         "pdf", "png", "jpg", "jpeg", "gif", "webp", "heic", "dxf", "dwg", "xlsx", "xls", "csv", "docx", "doc", "txt"])
 
@@ -71,6 +78,13 @@ class Config:
     @property
     def woo_configured(self) -> bool:
         return bool(self.woo_url and self.consumer_key and self.consumer_secret)
+
+
+def _decimal(value, default):
+    try:
+        return Decimal(str(value).strip()) if str(value).strip() not in ("", "None") else default
+    except (InvalidOperation, ValueError):
+        return default
 
 
 def _int_or_none(value):
@@ -141,6 +155,12 @@ def load_config(plugin=None) -> Config:
         quote_remind_days=max(int(s("QUOTE_REMIND_DAYS") or 0), 0),
         quote_max_file_mb=max(int(s("QUOTE_MAX_FILE_MB") or 20), 1),
         quote_max_files=max(int(s("QUOTE_MAX_FILES") or 20), 1),
+        quote_tax_rate=_decimal(s("QUOTE_TAX_RATE"), Decimal("10")),
+        quote_tax_label=(s("QUOTE_TAX_LABEL") or "").strip(),
+        quote_business_details=(s("QUOTE_BUSINESS_DETAILS") or "").replace("\\n", "\n").strip(),
+        quote_terms=(s("QUOTE_TERMS") or "").replace("\\n", "\n").strip(),
+        quote_report_template_id=_int_or_none(s("QUOTE_REPORT_TEMPLATE")),
+        quote_pdf_to_customer=bool(s("QUOTE_PDF_TO_CUSTOMER")),
         quote_file_types=[t.lower().lstrip(".") for t in _split(s("QUOTE_FILE_TYPES"))] or Config().quote_file_types,
         build_orders=s("BUILD_ORDERS") or "shortfall",
         build_requires_valid_bom=bool(s("BUILD_REQUIRES_VALID_BOM")),

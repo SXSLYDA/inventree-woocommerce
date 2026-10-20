@@ -42,7 +42,7 @@ $GLOBALS['fake_orders'] = array();
 $GLOBALS['fake_notices'] = array();
 class Fake_Mailer {
 	public function wrap_message( $heading, $html ) { return '<h1>' . $heading . '</h1>' . $html; }
-	public function send( $to, $subject, $message ) { return wp_mail( $to, $subject, $message, array( 'Content-Type: text/html' ) ); }
+	public function send( $to, $subject, $message, $headers = '', $attachments = array() ) { return wp_mail( $to, $subject, $message, array( 'Content-Type: text/html' ), $attachments ); }
 }
 class Fake_WC {
 	public $cart;

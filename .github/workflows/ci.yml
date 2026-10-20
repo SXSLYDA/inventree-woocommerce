@@ -29,7 +29,7 @@ jobs:
           DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
           USE_TZ = True
           EOF
-          PYTHONPATH=.:/tmp DJANGO_SETTINGS_MODULE=settings django-admin makemigrations inventree_woocommerce --check --dry-run
+          PYTHONPATH=.:/tmp:tests/stubs DJANGO_SETTINGS_MODULE=settings django-admin makemigrations inventree_woocommerce --check --dry-run
 
   wordpress:
     runs-on: ubuntu-latest

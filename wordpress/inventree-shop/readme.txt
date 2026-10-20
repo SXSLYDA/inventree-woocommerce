@@ -4,7 +4,7 @@ Tags: woocommerce, inventree, trade account, credit account, purchase order
 Requires at least: 6.4
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 0.3.0
+Stable tag: 0.4.0
 License: MIT
 
 Quote requests and "charge to my account" for shops run from InvenTree.
@@ -18,6 +18,8 @@ Companion to the inventree-woocommerce InvenTree plugin (https://github.com/SXSL
   they're queued and retried. Customers see and accept quotes (all or some lines) under My Account > Quotes, then
   pay online or charge their trade account. Emails for received, ready, sample received, declined, expiring and
   expired quotes.
+* Quote PDFs (printed by InvenTree): attached to the "your quote is ready" email and downloadable from
+  My Account > Quotes.
 * A "Request a custom version" button on product pages.
 * Adds a "Charge to my account" payment method, shown only to logged-in customers that InvenTree has approved
   for credit, and only when the order fits their available credit.

@@ -89,3 +89,24 @@ def test_helpers():
         money("abc")
     assert parse_date("2026-12-01T00:00") .isoformat() == "2026-12-01"
     assert parse_date("garbage") is None and parse_date("") is None
+
+
+def test_tax_totals():
+    from decimal import Decimal
+
+    from inventree_woocommerce.quote_pdf import tax_totals
+
+    assert tax_totals(Decimal("2942.10"), 10) == (Decimal("294.21"), Decimal("3236.31"))
+    assert tax_totals(Decimal("0.05"), 10) == (Decimal("0.01"), Decimal("0.06"))  # half-up
+    assert tax_totals(Decimal("100"), 0) == (Decimal("0.00"), Decimal("100.00"))
+    assert tax_totals(Decimal("100"), "12.5") == (Decimal("12.50"), Decimal("112.50"))
+
+
+def test_config_reads_tax_rate():
+    from decimal import Decimal
+
+    from inventree_woocommerce.config import _decimal
+
+    assert _decimal("10", Decimal("1")) == Decimal("10")
+    assert _decimal("", Decimal("10")) == Decimal("10")
+    assert _decimal("abc", Decimal("10")) == Decimal("10")

@@ -1,0 +1,149 @@
+{% extends "report/inventree_order_report_base.html" %}
+{% comment %}
+Quote PDF for inventree-woocommerce quote requests.
+
+Edit this in InvenTree: Admin Center > Reports > "Quote (web shop)". Context:
+  reference, status, is_draft, created, quoted, valid_until, required_by, currency
+  customer_name, customer_company, customer_email, customer_phone, company (InvenTree Company or None)
+  business_details (multi-line text), terms (multi-line text), customer_notes
+  items      - what was asked for: position, kind, description, oem_part_number, machine, quantity,
+               state ("quoted" / "cannot"), cannot_reason
+  lines      - priced lines: position, item_position, part (InvenTree Part), part_name, ipn, description,
+               quantity, unit_price, total (Money), lead_time
+  subtotal, tax, total (Money), tax_rate (Decimal, %), tax_label ("GST")
+{% endcomment %}
+
+{% load i18n %}
+{% load report %}
+
+{% block page_margin %}
+margin: 1.6cm;
+margin-top: 4.2cm;
+{% endblock page_margin %}
+
+{% block bottom_left %}
+content: "{{ reference }}";
+{% endblock bottom_left %}
+
+{% block bottom_center %}
+content: "{% if valid_until %}Valid until {{ valid_until|date:'j M Y' }}{% endif %}";
+{% endblock bottom_center %}
+
+{% block style %}
+{{ block.super }}
+.header-right { text-align: right; float: right; }
+.business { white-space: pre-line; }
+.title { font-size: 20pt; font-weight: bold; letter-spacing: 1px; margin: 0; }
+.draft { color: #b00; font-weight: bold; font-size: 11pt; border: 2px solid #b00; padding: 2px 8px; display: inline-block; }
+.parties { width: 100%; margin: 0 0 14px 0; border: 0; font-size: 90%; }
+.parties td { border: 0; vertical-align: top; padding: 0 12px 0 0; width: 50%; }
+.label { color: #777; font-size: 80%; text-transform: uppercase; letter-spacing: 0.5px; }
+table.lines th { background: #f2f2f2; text-align: left; padding: 4px; }
+table.lines td { padding: 4px; vertical-align: top; }
+table.lines td.num, table.lines th.num { text-align: right; white-space: nowrap; }
+table.lines tr.totals td { border: 0; }
+table.lines tr.grand td { font-weight: bold; border-top: 2px solid #333; }
+.muted { color: #777; font-size: 85%; }
+.cannot { color: #b00; }
+.terms { white-space: pre-line; font-size: 80%; color: #444; margin-top: 18px; }
+.notes { white-space: pre-line; }
+{% endblock style %}
+
+{% block header_content %}
+<img class='logo' src='{% logo_image %}' alt=''>
+<div class='header-right'>
+    <p class='title'>{% trans "QUOTATION" %}</p>
+    <div><strong>{{ reference }}</strong></div>
+    {% if is_draft %}<div class='draft'>{% trans "DRAFT - not yet a valid quote" %}</div>{% endif %}
+</div>
+{% endblock header_content %}
+
+{% block page_content %}
+
+<table class='parties'>
+    <tr>
+        <td>
+            <div class='label'>{% trans "From" %}</div>
+            <div class='business'>{% if business_details %}{{ business_details }}{% elif company %}{{ company.name }}{% endif %}</div>
+        </td>
+        <td>
+            <div class='label'>{% trans "Quote for" %}</div>
+            <div><strong>{{ customer_company|default:customer_name }}</strong></div>
+            {% if customer_company and customer_name %}<div>{{ customer_name }}</div>{% endif %}
+            {% if customer_email %}<div>{{ customer_email }}</div>{% endif %}
+            {% if customer_phone %}<div>{{ customer_phone }}</div>{% endif %}
+        </td>
+    </tr>
+    <tr>
+        <td style='padding-top:8px'>
+            <div class='label'>{% trans "Date" %}</div>
+            <div>{{ quoted|default:created|date:'j M Y' }}</div>
+        </td>
+        <td style='padding-top:8px'>
+            {% if valid_until %}<div class='label'>{% trans "Valid until" %}</div><div>{{ valid_until|date:'j M Y' }}</div>{% endif %}
+            {% if required_by %}<div class='label'>{% trans "Required by" %}</div><div>{{ required_by|date:'j M Y' }}</div>{% endif %}
+        </td>
+    </tr>
+</table>
+
+<table class='lines'>
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>{% trans "Description" %}</th>
+            <th class='num'>{% trans "Qty" %}</th>
+            <th class='num'>{% trans "Unit price" %}</th>
+            <th class='num'>{% trans "Total" %}</th>
+            <th>{% trans "Lead time" %}</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for line in lines %}
+        <tr>
+            <td>{{ line.position }}</td>
+            <td>
+                {{ line.description }}
+                {% if line.part_name and line.part_name != line.description %}<div class='muted'>{{ line.part_name }}{% if line.ipn %} ({{ line.ipn }}){% endif %}</div>{% endif %}
+                {% if line.item_position %}<div class='muted'>{% trans "For your item" %} {{ line.item_position }}</div>{% endif %}
+            </td>
+            <td class='num'>{{ line.quantity }}</td>
+            <td class='num'>{% render_currency line.unit_price decimal_places=2 max_decimal_places=2 %}</td>
+            <td class='num'>{% render_currency line.total decimal_places=2 max_decimal_places=2 %}</td>
+            <td>{{ line.lead_time }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan='6' class='muted'>{% trans "No priced lines yet." %}</td></tr>
+        {% endfor %}
+        <tr class='totals'>
+            <td colspan='4' class='num'>{% trans "Subtotal (ex" %} {{ tax_label }})</td>
+            <td class='num'>{% render_currency subtotal decimal_places=2 max_decimal_places=2 %}</td>
+            <td></td>
+        </tr>
+        {% if tax_rate %}
+        <tr class='totals'>
+            <td colspan='4' class='num'>{{ tax_label }} {{ tax_rate|floatformat:"-2" }}%</td>
+            <td class='num'>{% render_currency tax decimal_places=2 max_decimal_places=2 %}</td>
+            <td></td>
+        </tr>
+        {% endif %}
+        <tr class='totals grand'>
+            <td colspan='4' class='num'>{% trans "Total" %}{% if tax_rate %} ({% trans "inc" %} {{ tax_label }}){% endif %}</td>
+            <td class='num'>{% render_currency total decimal_places=2 max_decimal_places=2 %}</td>
+            <td></td>
+        </tr>
+    </tbody>
+</table>
+<p class='muted'>{% trans "Delivery is charged separately unless shown above." %}</p>
+
+{% for item in items %}{% if item.state == "cannot" %}
+<p class='cannot'>{% trans "Item" %} {{ item.position }} ({{ item.description|default:item.oem_part_number|truncatechars:60 }}): {% trans "we can't supply this" %}{% if item.cannot_reason %} - {{ item.cannot_reason }}{% endif %}</p>
+{% endif %}{% endfor %}
+
+{% if customer_notes %}
+<div class='label' style='margin-top:12px'>{% trans "Your notes" %}</div>
+<div class='notes'>{{ customer_notes }}</div>
+{% endif %}
+
+{% if terms %}<div class='terms'>{{ terms }}</div>{% endif %}
+
+{% endblock page_content %}

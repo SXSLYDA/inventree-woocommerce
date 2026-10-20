@@ -19,12 +19,14 @@ From the WordPress plugin (signed with the shop link secret):
   POST quotes/submit/                 new quote request (multipart: payload + files)
   POST quotes/customer/               a customer's quotes, for My Account
   POST quotes/accept/                 accept lines -> pending order + payment link
+  POST quotes/pdf/                    PDF of a sent quote (for My Account and the "quote ready" email)
 
 Staff (Quote Requests dashboard widget):
   GET  quotes/?status=open|all|<status>   list
   GET  quotes/<id>/                   detail
   POST quotes/<id>/                   action (sample_received, called, cannot, set_lines, send, decline, ...)
   GET  quotes/<id>/files/<file>/      download a customer file
+  GET  quotes/<id>/pdf/               the quote as a PDF (InvenTree report template)
 
 Signed-in users (the InvenTree panels):
   GET  part/<part>/                   is the part in the shop, and if not, why not
@@ -428,6 +430,56 @@ class QuoteDetailView(APIView):
         return Response({"detail": message, "quote": serialize(quote, staff=True)})
 
 
+class QuotePdfView(APIView):
+    """Staff: the quote as a PDF (draft until it's sent)."""
+
+    permission_classes = [IsAdminUser]
+
+    def get(self, request, pk):
+        from django.http import HttpResponse
+
+        from .config import load_config
+        from .models import QuoteRequest
+        from .quote_pdf import QuotePdfError, render_pdf
+
+        quote = QuoteRequest.objects.filter(pk=pk).first()
+        if quote is None:
+            return Response({"detail": "Not found."}, status=404)
+        try:
+            data, name = render_pdf(quote, load_config(), user=request.user)
+        except QuotePdfError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        response = HttpResponse(data, content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="{name}"'
+        return response
+
+
+def quote_customer_pdf(request):
+    """WordPress: the PDF of one of this customer's sent quotes (signed)."""
+    from django.http import HttpResponse
+
+    from .models import QuoteRequest
+    from .quote_pdf import CUSTOMER_STATUSES, QuotePdfError, render_pdf
+    from .quotes import _int
+
+    config, data = _signed_json(request)
+    if config is None:
+        return data
+    if not config.quote_pdf_to_customer:
+        return _json(404, {"detail": "Quote PDFs aren't offered."})
+    quote = QuoteRequest.objects.filter(reference=str(data.get("reference", "")).upper(),
+                                        woo_customer_id=_int(data.get("customer_id"))).first()
+    if quote is None or quote.status not in CUSTOMER_STATUSES:
+        return _json(404, {"detail": "Quote not found."})
+    try:
+        pdf, name = render_pdf(quote, config)
+    except QuotePdfError as exc:
+        return _json(502, {"detail": str(exc)})
+    response = HttpResponse(pdf, content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="{name}"'
+    return response
+
+
 class QuoteFileView(APIView):
     permission_classes = [IsAdminUser]
 
@@ -463,9 +515,11 @@ urlpatterns = [
     path("quotes/submit/", _public(quote_submit), name="quote-submit"),
     path("quotes/customer/", _public(quote_customer_list), name="quote-customer"),
     path("quotes/accept/", _public(quote_accept), name="quote-accept"),
+    path("quotes/pdf/", _public(quote_customer_pdf), name="quote-customer-pdf"),
     path("quotes/", QuoteListView.as_view(), name="quote-list"),
     path("quotes/<int:pk>/", QuoteDetailView.as_view(), name="quote-detail"),
     path("quotes/<int:pk>/files/<int:file_id>/", QuoteFileView.as_view(), name="quote-file"),
+    path("quotes/<int:pk>/pdf/", QuotePdfView.as_view(), name="quote-pdf"),
     path("salesorder/<int:so_id>/", SalesOrderShopView.as_view(), name="salesorder-shop"),
     path("accounts/<int:company_id>/", AccountView.as_view(), name="account"),
 ]

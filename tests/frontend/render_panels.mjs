@@ -96,14 +96,17 @@ fixtures['/api/part/'] = { count: 1, results: [{ pk: 42, name: 'OMG-CUSTOM-1', f
 const posted = [];
 const postedBodies = [];
 const partSearches = [];
+const pdfRequests = [];
+const openedUrls = [];
 const navigated = [];
 function makeContext(id) {
   return {
     id,
     api: {
       get: async (url, config) => {
-        if (!(url in fixtures)) throw new Error('unexpected GET ' + url);
+        if (!(url in fixtures) && url !== '/plugin/woocommerce/quotes/1/pdf/') throw new Error('unexpected GET ' + url);
         if (url === '/api/part/') partSearches.push(config?.params);
+        if (url === '/plugin/woocommerce/quotes/1/pdf/') { pdfRequests.push(config); return { data: new window.Blob(['%PDF-1.7']) }; }
         return { data: fixtures[url] };
       },
       post: async (url, body) => {
@@ -219,6 +222,13 @@ const saveBtn = [...document.body.querySelectorAll('button')].find((b) => b.text
 await act(async () => { saveBtn.click(); await new Promise((r) => setTimeout(r, 50)); });
 const saved = postedBodies.find((b) => b && b.action === 'set_lines');
 check('quotes: save lines sends part, item and price', !!saved && saved.lines[0].part_id === 42 && saved.lines[0].unit_price === '1450' && saved.lines[0].item_id === 11);
+check('quotes: PDF preview offered once there are lines', [...document.body.querySelectorAll('button')].some((b) => b.textContent === 'Preview PDF (draft)'));
+const pdfBtn = [...document.body.querySelectorAll('button')].find((b) => b.textContent === 'Preview PDF (draft)');
+window.open = (url) => { openedUrls.push(url); return {}; };
+window.URL.createObjectURL = () => 'blob:quote-pdf';
+window.URL.revokeObjectURL = () => {};
+await act(async () => { pdfBtn.click(); await new Promise((r) => setTimeout(r, 50)); });
+check('quotes: PDF fetched as a file and opened', pdfRequests.some((c) => c && c.responseType === 'blob') && openedUrls.includes('blob:quote-pdf'));
 check('quotes: send and decline actions available', [...document.body.querySelectorAll('button')].some((b) => b.textContent === 'Send quote') && page().includes('Decline reason'));
 
 const reactErrors = errors.filter((e) => !e.includes('Not implemented: window.computedStyle') && !e.includes('Could not parse CSS'));

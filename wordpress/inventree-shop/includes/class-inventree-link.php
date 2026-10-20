@@ -85,6 +85,37 @@ class InvenTree_Link {
 	}
 
 	/**
+	 * A sent quote's PDF from InvenTree (signed). Returns the PDF bytes, or WP_Error.
+	 */
+	public static function quote_pdf( $customer_id, $reference ) {
+		if ( ! self::configured() ) {
+			return new WP_Error( 'inventree_not_configured', __( 'The shop isn\'t connected to InvenTree yet.', 'inventree-shop' ) );
+		}
+		$body             = wp_json_encode( array( 'customer_id' => (int) $customer_id, 'reference' => (string) $reference ) );
+		list( $ts, $sig ) = self::sign( $body );
+		$response         = wp_remote_post(
+			self::base_url() . '/plugin/woocommerce/quotes/pdf/',
+			array(
+				'timeout' => 60,
+				'headers' => array(
+					'Content-Type'               => 'application/json',
+					'X-InvenTree-Shop-Timestamp' => $ts,
+					'X-InvenTree-Shop-Signature' => $sig,
+				),
+				'body'    => $body,
+			)
+		);
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+		$data = wp_remote_retrieve_body( $response );
+		if ( 200 !== (int) wp_remote_retrieve_response_code( $response ) || 0 !== strpos( $data, '%PDF' ) ) {
+			return new WP_Error( 'inventree_no_pdf', __( 'The quote PDF isn\'t available.', 'inventree-shop' ) );
+		}
+		return $data;
+	}
+
+	/**
 	 * POST a quote request: signed JSON payload + files, streamed with cURL.
 	 *
 	 * @param array $payload Payload (already includes the file list with hashes).

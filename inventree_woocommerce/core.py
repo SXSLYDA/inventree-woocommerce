@@ -318,6 +318,40 @@ class WooCommercePlugin(AppMixin, SettingsMixin, UrlsMixin, EventMixin, Schedule
             "description": "Comma-separated file extensions customers may upload.",
             "default": "pdf,png,jpg,jpeg,gif,webp,heic,dxf,dwg,xlsx,xls,csv,docx,doc,txt",
         },
+        "QUOTE_BUSINESS_DETAILS": {
+            "name": "Quote PDF: your details",
+            "description": "Printed in the 'From' box of quote PDFs: business name, ABN, address, phone, email. "
+                           "Put each on a new line (or separate with \\n). The logo is InvenTree's custom logo.",
+            "default": "",
+        },
+        "QUOTE_TERMS": {
+            "name": "Quote PDF: terms",
+            "description": "Printed at the bottom of quote PDFs, e.g. payment terms, warranty, validity.",
+            "default": "",
+        },
+        "QUOTE_TAX_RATE": {
+            "name": "Quote tax rate (%)",
+            "description": "Added to the quote total on the PDF (prices are entered ex tax). 0 = no tax line.",
+            "default": "10",
+        },
+        "QUOTE_TAX_LABEL": {
+            "name": "Quote tax name",
+            "default": "GST",
+        },
+        "QUOTE_REPORT_TEMPLATE": {
+            "name": "Quote report template",
+            "description": "Which report template prints quotes (model type 'quote request'). Blank = the first "
+                           "enabled one; the plugin installs 'Quote (web shop)' if there's none.",
+            "model": "report.reporttemplate",
+            "model_filters": {"model_type": "quoterequest"},
+        },
+        "QUOTE_PDF_TO_CUSTOMER": {
+            "name": "Quote PDF for customers",
+            "description": "Attach the PDF to the 'your quote is ready' email and let customers download it from "
+                           "My Account > Quotes.",
+            "validator": bool,
+            "default": True,
+        },
         # --- Build Orders ---
         "BUILD_ORDERS": {
             "name": "Build Orders for build-to-order items",

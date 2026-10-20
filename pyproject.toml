@@ -35,7 +35,7 @@ version = { attr = "inventree_woocommerce.version.PLUGIN_VERSION" }
 include = ["inventree_woocommerce*"]
 
 [tool.setuptools.package-data]
-inventree_woocommerce = ["static/*.js"]
+inventree_woocommerce = ["static/*.js", "report_templates/*.html"]
 
 [tool.ruff]
 line-length = 120

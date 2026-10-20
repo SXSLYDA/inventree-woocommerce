@@ -131,6 +131,9 @@ price and image on a part. This plugin has no dependency on how those get set.
 | Shop link secret | Shared with the WordPress plugin; signs quote requests and notifications |
 | Quotes valid for / Expiry reminder | Days a quote can be accepted (30), reminder days before expiry (3) |
 | Largest quote upload / Most files / Upload file types | Quote upload limits |
+| Quote PDF: your details / Quote PDF: terms | Printed on quote PDFs |
+| Quote tax rate / Quote tax name | Tax added on the PDF (10%, GST) |
+| Quote report template / Quote PDF for customers | Which template prints quotes; PDF in the email and My Account |
 
 ## Quote requests
 
@@ -158,6 +161,17 @@ Customers must be **logged in** (no anonymous requests). The flow:
    copied onto the Sales Order as attachments.
 6. **Expiry**: a reminder a few days before (default 3), then the quote expires and any unpaid order is
    cancelled. You can also reopen a sent quote to change it, or decline it with a reason.
+
+**Quote PDFs.** Quotes print through InvenTree's own report engine: a quote request is a report model (type
+*quote request*), so the PDF is an ordinary report template you can edit in *Admin Center > Reports*. The plugin
+installs **"Quote (web shop)"** the first time a PDF is needed: your InvenTree logo, *Quote PDF: your details*
+(name, ABN, address, phone - one per line), the customer, date / valid until / required by, the priced lines
+with lead times, subtotal ex GST, GST (*Quote tax rate*, default 10%) and total, any items you can't supply,
+the customer's notes and *Quote PDF: terms*. Pick a different template with *Quote report template*.
+
+- Staff: **Preview PDF (draft)** / **Download PDF** in the quote window (marked DRAFT until the quote is sent).
+- Customers (*Quote PDF for customers*, on by default): the PDF is attached to the "your quote is ready" email
+  and can be downloaded from My Account > Quotes. Only sent (or accepted / expired) quotes, and only their own.
 
 Uploads: file types and sizes are settings (default 20 files, 20 MB each, PDFs/images/DXF/DWG/Office/CSV/text).
 Files are stored privately and only staff can download them. Make sure the web servers allow uploads that big:
@@ -302,6 +316,8 @@ WooCommerce retries. Failed orders are retried automatically (up to 5 times), or
 | `POST /plugin/woocommerce/quotes/submit/` | WordPress (signed) | New quote request (payload + files) |
 | `POST /plugin/woocommerce/quotes/customer/` | WordPress (signed) | A customer's quotes, for My Account |
 | `POST /plugin/woocommerce/quotes/accept/` | WordPress (signed) | Accept lines, get the payment link |
+| `POST /plugin/woocommerce/quotes/pdf/` | WordPress (signed) | PDF of a customer's sent quote |
+| `GET /plugin/woocommerce/quotes/<id>/pdf/` | Staff | Quote PDF (draft until sent) |
 | `GET/POST /plugin/woocommerce/quotes/...` | Staff | Quote Requests widget (list, detail, actions, files) |
 | `GET /plugin/woocommerce/status/` | Staff | Config problems, last sync, product errors, recent orders |
 | `POST /plugin/woocommerce/sync/` | Staff | Sync now |

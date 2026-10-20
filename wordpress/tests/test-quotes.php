@@ -1,7 +1,7 @@
 <?php
 /**
  * Quote requests in real WordPress against a real (throwaway!) InvenTree with the plugin and shop link secret set.
- * Run: php test-quotes.php /path/to/wordpress http://127.0.0.1:8124 <shop link secret>
+ * Run: php test-quotes.php /path/to/wordpress http://127.0.0.1:8124 <shop link secret> [<customer id> <sent quote reference>]
  */
 $wordpress_dir = $argv[1];
 $inventree_url = $argv[2];
@@ -190,6 +190,32 @@ $res = notify( array( 'event' => 'quote_sent', 'reference' => $reference, 'custo
 check( '...also when nobody is logged in', 401 === $res->get_status() && count( $GLOBALS['mails'] ) === $before );
 $old = notify( array( 'event' => 'quote_sent', 'reference' => $reference, 'customer_id' => $user ), $shop_secret );
 wp_set_current_user( $user );
+
+// quote PDFs (needs a sent quote in InvenTree: pass its customer id and reference as arguments 4 and 5)
+if ( isset( $argv[5] ) ) {
+	$pdf = InvenTree_Link::quote_pdf( (int) $argv[4], $argv[5] );
+	check( 'quote PDF fetched from InvenTree (signed)', is_string( $pdf ) && 0 === strpos( $pdf, '%PDF' ) );
+	$other = InvenTree_Link::quote_pdf( 999999, $argv[5] );
+	check( '...but not for another customer', is_wp_error( $other ) );
+	$captured = array();
+	add_filter( 'pre_wp_mail', function ( $null, $atts ) use ( &$captured ) {
+		foreach ( (array) $atts['attachments'] as $path ) {
+			$captured[] = array( basename( $path ), file_exists( $path ) ? file_get_contents( $path ) : '' );
+		}
+		return true;
+	}, 5, 2 );
+	$res = notify( array( 'event' => 'quote_sent', 'reference' => $argv[5], 'customer_id' => (int) $argv[4], 'email' => 'buyer@acme.example', 'total' => '2942.10', 'currency' => 'AUD', 'pdf' => true ), $shop_secret );
+	$body = $res->get_data();
+	$mail = end( $GLOBALS['mails'] );
+	check( '"quote ready" email has the PDF attached', 1 === $body['attached'] && $captured && 'Quote-' . $argv[5] . '.pdf' === $captured[0][0] && 0 === strpos( $captured[0][1], '%PDF' ) );
+	check( '...and says so', false !== strpos( $mail['message'], 'attached as a PDF' ) );
+	check( 'temporary PDF cleaned up after sending', ! glob( trailingslashit( get_temp_dir() ) . 'inventree-quote-*/*.pdf' ) );
+}
+ob_start();
+$render->invoke( null, array( 'reference' => 'QR-FIX-0002', 'status' => 'quoted', 'status_label' => 'Quoted', 'valid_until' => '2026-11-18', 'decline_reason' => '', 'currency' => 'AUD', 'can_accept' => false, 'total' => '1', 'has_pdf' => true,
+	'items' => array(), 'lines' => array( array( 'id' => 1, 'description' => 'x', 'quantity' => 1, 'unit_price' => '1', 'total' => '1', 'lead_time' => '' ) ) ) );
+$with_pdf = ob_get_clean();
+check( 'My Account quote page offers the PDF download', false !== strpos( $with_pdf, '/quotes/QR-FIX-0002/pdf/' ) && false !== strpos( $with_pdf, 'Download quote (PDF)' ) );
 
 // quote-only products
 $quote_only = new Fake_Product( 'OMG-CUSTOM-1', 'Custom loom', array( '_inventree_quote_only' => '1' ) );

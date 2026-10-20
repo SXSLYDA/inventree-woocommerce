@@ -615,6 +615,42 @@ assert len(woo_quote_order["line_items"]) == 1 and woo_quote_order["line_items"]
 quote.refresh_from_db()
 assert quote.woo_order_id and quote.status == "quoted"
 
+# --- quote PDF through InvenTree's report engine ---
+import io  # noqa: E402
+
+from pypdf import PdfReader  # noqa: E402
+from report.models import ReportTemplate  # noqa: E402
+
+plugin.set_setting("QUOTE_BUSINESS_DETAILS", "OMG Harness\\nABN 12 345 678 901\\nKalgoorlie WA")
+plugin.set_setting("QUOTE_TERMS", "Payment: 30 days from invoice for account customers.")
+r = staff_client.get(f"/plugin/woocommerce/quotes/{quote.pk}/pdf/", secure=True)
+print("staff pdf:", r.status_code, r["Content-Type"], r.get("Content-Disposition"))
+assert r.status_code == 200 and r["Content-Type"] == "application/pdf" and r.content.startswith(b"%PDF")
+pdf_text = "\n".join(page.extract_text() for page in PdfReader(io.BytesIO(r.content)).pages)
+print("pdf text sample:", " | ".join(pdf_text.split("\n")[:14]))
+for expected in ("QUOTATION", quote.reference, "OMG Harness", "ABN 12 345 678 901", "Acme", "Engine loom to sample",
+                 "1,450.00", "2,900.00", "4.21", "42.10", "6 weeks", "In stock", "Subtotal (ex GST) A$2,942.10",
+                 "GST 10% A$294.21", "Total (inc GST) A$3,236.31", "Valid until", "30 days", "Two machines"):
+    assert expected in pdf_text, f"{expected!r} missing from the quote PDF"
+assert "DRAFT" not in pdf_text, "a sent quote isn't a draft"
+tmpl = ReportTemplate.objects.get(model_type="quoterequest")
+print("report template:", tmpl.name, tmpl.enabled, tmpl.filename_pattern)
+assert tmpl.name == "Quote (web shop)"
+assert viewer.get(f"/plugin/woocommerce/quotes/{quote.pk}/pdf/", secure=True).status_code == 403
+
+r = signed_post("/plugin/woocommerce/quotes/pdf/", {"customer_id": 77, "reference": quote.reference})
+assert r.status_code == 200 and r.content.startswith(b"%PDF") and "attachment" in r["Content-Disposition"]
+assert signed_post("/plugin/woocommerce/quotes/pdf/", {"customer_id": 88, "reference": quote.reference}).status_code == 404
+draft_q = QuoteRequest.objects.create(reference="QR-DRAFT-0001", woo_customer_id=77, status="reviewing")
+assert signed_post("/plugin/woocommerce/quotes/pdf/", {"customer_id": 77, "reference": "QR-DRAFT-0001"}).status_code == 404, \
+    "customers only get PDFs of sent quotes"
+r = staff_client.get(f"/plugin/woocommerce/quotes/{draft_q.pk}/pdf/", secure=True)
+assert r.status_code == 200 and "DRAFT" in PdfReader(io.BytesIO(r.content)).pages[0].extract_text()
+from common.models import DataOutput  # noqa: E402
+
+assert not DataOutput.objects.filter(template_name="Quote (web shop)").exists(), "one-off PDFs aren't kept"
+print("quote pdf ok")
+
 # the customer pays it -> Sales Order, quote accepted, files copied, Build Order with the quoted lead time
 paid = {"id": quote.woo_order_id, "number": str(quote.woo_order_id), "status": "processing", "currency": "AUD",
         "total": "3190.00", "total_tax": "290.00", "payment_method": "stripe", "payment_method_title": "Card",

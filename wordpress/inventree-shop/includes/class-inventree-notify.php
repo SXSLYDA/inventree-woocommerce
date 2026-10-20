@@ -48,6 +48,7 @@ class InvenTree_Shop_Notify {
 					'<p>' . esc_html( sprintf( /* translators: %s: reference */ __( 'Your quote %s is ready.', 'inventree-shop' ), $ref ) ) . '</p>'
 						. ( $total ? '<p>' . esc_html__( 'Total (ex GST):', 'inventree-shop' ) . ' ' . wp_kses_post( $total ) . '</p>' : '' )
 						. ( $until ? '<p>' . esc_html( sprintf( /* translators: %s: date */ __( 'Valid until %s. You can accept all or part of it online.', 'inventree-shop' ), $until ) ) . '</p>' : '' )
+						. ( ! empty( $data['pdf'] ) ? '<p>' . esc_html__( 'The quote is attached as a PDF.', 'inventree-shop' ) . '</p>' : '' )
 						. $link . $call,
 				);
 			case 'sample_received':
@@ -96,7 +97,25 @@ class InvenTree_Shop_Notify {
 			return new WP_REST_Response( array( 'detail' => 'no recipient' ), 200 );
 		}
 		list( $subject, $heading, $html ) = $message;
-		InvenTree_Shop_Quotes::send_email( $email, $subject, $heading, $html );
-		return new WP_REST_Response( array( 'detail' => 'sent' ), 200 );
+
+		// "Quote ready": attach the PDF (fetched from InvenTree, signed) when InvenTree offers it.
+		$attachments = array();
+		if ( 'quote_sent' === $data['event'] && ! empty( $data['pdf'] ) && ! empty( $data['customer_id'] ) ) {
+			$pdf = InvenTree_Link::quote_pdf( (int) $data['customer_id'], (string) $data['reference'] );
+			if ( ! is_wp_error( $pdf ) ) {
+				$dir  = trailingslashit( get_temp_dir() ) . 'inventree-quote-' . wp_generate_password( 12, false );
+				wp_mkdir_p( $dir );
+				$path = $dir . '/Quote-' . sanitize_file_name( $data['reference'] ) . '.pdf';
+				if ( false !== file_put_contents( $path, $pdf ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions
+					$attachments[] = $path;
+				}
+			}
+		}
+		InvenTree_Shop_Quotes::send_email( $email, $subject, $heading, $html, $attachments );
+		foreach ( $attachments as $path ) {
+			wp_delete_file( $path );
+			@rmdir( dirname( $path ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		}
+		return new WP_REST_Response( array( 'detail' => 'sent', 'attached' => count( $attachments ) ), 200 );
 	}
 }

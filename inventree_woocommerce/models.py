@@ -12,6 +12,7 @@ deleted part or order simply leaves a dangling id that the sync code handles.
 """
 
 from django.db import models
+from report.mixins import BaseReportContext, InvenTreeReportMixin
 
 
 class ProductLink(models.Model):
@@ -149,8 +150,26 @@ def _quote_file_path(instance, filename):
     return f"woocommerce_quotes/{instance.request.reference}/{uuid.uuid4().hex}{ext}"
 
 
-class QuoteRequest(models.Model):
-    """A customer's request for a quote: one or more items, with drawings, samples or a call."""
+class QuoteReportContext(BaseReportContext):
+    """What a quote report template can use (see report_templates/inventree_woocommerce_quote.html)."""
+
+    quote: "QuoteRequest"
+    reference: str
+    status: str
+    is_draft: bool
+    lines: list
+    items: list
+    subtotal: object
+    tax: object
+    total: object
+
+
+class QuoteRequest(InvenTreeReportMixin):
+    """
+    A customer's request for a quote: one or more items, with drawings, samples or a call.
+
+    A report model, so quote PDFs are InvenTree report templates (model type "quoterequest").
+    """
 
     class Status(models.TextChoices):
         NEW = "new", "New"
@@ -200,6 +219,12 @@ class QuoteRequest(models.Model):
 
     def __str__(self):
         return f"{self.reference} ({self.get_status_display()})"
+
+    def report_context(self) -> QuoteReportContext:
+        from .config import load_config
+        from .quote_pdf import build_context
+
+        return build_context(self, load_config())
 
 
 class QuoteItem(models.Model):

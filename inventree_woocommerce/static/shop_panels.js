@@ -466,12 +466,46 @@ function QuoteDetail({ context, id }) {
         ? h(M.Group, { gap: 'xs' }, h(M.Text, { size: 'sm', c: 'dimmed' }, 'Other files:'),
             q.files.filter((f) => !f.item_id).map((f) => h(ExternalLink, { key: f.id, href: f.url }, f.name)))
         : null,
-      h(M.Title, { order: 5 }, 'Quote'),
+      h(M.Group, { justify: 'space-between' },
+        h(M.Title, { order: 5 }, 'Quote'),
+        q.lines.length ? h(PdfButton, { context, quote: q }) : null),
       h(QuoteLines, { context, quote: q, editable, busy, act }),
       h(QuoteActions, { quote: q, busy, act }),
       h(StaffNotes, { quote: q, busy, act }),
     );
   });
+}
+
+function PdfButton({ context, quote }) {
+  const [busy, setBusy] = useState(false);
+  const draft = !['quoted', 'accepted', 'expired'].includes(quote.status);
+  const open = () => {
+    setBusy(true);
+    context.api
+      .get(`${BASE}/quotes/${quote.id}/pdf/`, { responseType: 'blob', timeout: 120000 })
+      .then((r) => {
+        const url = window.URL.createObjectURL(new window.Blob([r.data], { type: 'application/pdf' }));
+        const opened = window.open(url, '_blank');
+        if (!opened) {
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `Quote-${quote.reference}.pdf`;
+          a.click();
+        }
+        setTimeout(() => window.URL.revokeObjectURL(url), 60000);
+      })
+      .catch(async (e) => {
+        let detail = errorText(e);
+        const blob = e?.response?.data;
+        if (blob && typeof blob.text === 'function') {
+          try { detail = JSON.parse(await blob.text()).detail || detail; } catch (_) { /* not JSON */ }
+        }
+        notify('red', 'Quote PDF', detail);
+      })
+      .finally(() => setBusy(false));
+  };
+  return h(M.Button, { size: 'xs', variant: 'light', loading: busy, onClick: open },
+    draft ? 'Preview PDF (draft)' : 'Download PDF');
 }
 
 function QuoteItemCard({ item, files, editable, busy, act }) {

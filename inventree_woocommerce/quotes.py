@@ -311,6 +311,7 @@ def serialize(quote, staff=False):
         "lines": [line_data(line) for line in lines],
         "total": str(sum((line.unit_price * line.quantity for line in lines), Decimal("0")).quantize(Decimal("0.01"))),
         "can_accept": quote.status == "quoted" and (quote.valid_until is None or quote.valid_until >= date.today()),
+        "has_pdf": quote.status in ("quoted", "accepted", "expired"),
     }
     if staff:
         data.update({
@@ -510,7 +511,7 @@ def send_quote(quote, config, valid_days):
     quote.save()
     from .shop_link import notify_shop
 
-    notify_shop("quote_sent", _notice(quote, total=serialize(quote)["total"]))
+    notify_shop("quote_sent", _notice(quote, total=serialize(quote)["total"], pdf=config.quote_pdf_to_customer))
     return f"Quote sent - valid until {quote.valid_until:%d %b %Y}."
 
 
