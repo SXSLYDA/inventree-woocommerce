@@ -101,7 +101,7 @@ jobs:
           pip install -r inventree/src/backend/requirements.txt
           pip install -e plugin pypdf
       - name: Live tests
-        run: plugin/tests/live/run_live.sh inventree "$(which python)" "$RUNNER_TEMP/live" ${{ matrix.wordpress }}
+        run: bash plugin/tests/live/run_live.sh inventree "$(which python)" "$RUNNER_TEMP/live" ${{ matrix.wordpress }}
 
   # A release tag: a GitHub release with the changelog notes and the WordPress plugin zip.
   release:
