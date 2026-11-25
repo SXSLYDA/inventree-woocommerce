@@ -88,6 +88,8 @@ Each [GitHub release](https://github.com/SXSLYDA/inventree-woocommerce/releases)
 4. **Website:** upload `inventree-shop-X.Y.Z.zip` from the same release in WordPress > Plugins > Add New >
    Upload Plugin (WooCommerce must be active).
 
+**From PyPI:** add `inventree-woocommerce` (or pin a version, e.g. `inventree-woocommerce==0.6.0`) to `plugins.txt`, then run `invoke update` and restart. The WordPress plugin still comes from the GitHub release zip.
+
 **Updating later:** `sudo inventree-shop-update --check-only` shows what's installed, pinned and newest;
 `sudo inventree-shop-update` updates to the newest release (or name one). Read the release's notes in
 [CHANGELOG.md](CHANGELOG.md) first - they say when a release adds a migration or changes the WordPress plugin,

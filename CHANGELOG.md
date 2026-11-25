@@ -6,6 +6,12 @@ Add notes for the next release under **Unreleased** as you work. `build-and-bump
 
 ## Unreleased
 
+## 0.6.1 — 2026-11-25
+
+- Published to PyPI: release tags are now also built and uploaded to PyPI (trusted publishing) after all tests pass; install with `inventree-woocommerce` in plugins.txt
+- CI builds the package and runs `twine check` on every push
+- Packaging: licence declared in the current SPDX form (no more setuptools deprecation warnings)
+
 ## 0.6.0 — 2026-10-21
 
 - **Quote pricing providers:** another InvenTree plugin can own quote pricing (`providers.py`, three duck-typed hooks). With inventree-xero 1.5+ quotes are priced and sent in Xero, customers get Xero's PDF and accept the whole quote. Setting *Where quotes are priced* (`QUOTE_PRICING`).
